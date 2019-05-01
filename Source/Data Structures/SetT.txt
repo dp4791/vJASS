@@ -1,0 +1,234 @@
+library SetT uses Alloc, Iterator
+/*
+
+    Set of integers.
+    
+        Ordered: False or True
+        Unique: True
+        Insert: By value
+        Delete: By value
+        Access: By index(contiguous) or iterator
+        
+    API
+
+        DataSet
+        
+            static method create takes boolean ordered returns thistype
+            static method operator [] takes thistype other returns thistype
+                - Copy constructor
+            method destroy takes nothing returns nothing
+            
+            readonly boolean ordered
+            readonly integer size
+            method operator [] takes integer index returns integer
+            method has takes integer value returns boolean
+            method hasIndex takes integer index returns boolean
+            method getIndex takes integer value returns integer
+                - Returns -1 if not found
+            method iterator takes nothing returns Iterator
+            
+            method add takes integer value returns boolean
+                - Returns true on successful addition
+            method addSet takes thistype otherSet returns nothing
+            method remove takes integer value returns boolean
+                - Returns true on successful removal
+            method clear takes nothing returns nothing
+        
+*/
+
+    struct Set extends array
+        implement Alloc
+        
+        private Table valueList
+        private Table indexList
+        readonly boolean ordered
+        readonly integer size
+        
+        method operator [] takes integer index returns integer
+            if index < 0 or .size <= index then
+                debug call BJDebugMsg("DataSet - [] - index(" + I2S(index) + ") out of range(0~" + I2S(.size - 1) + ")")
+                return 0
+            endif
+            
+            return .valueList[index]
+        endmethod
+        method has takes integer value returns boolean
+            return .indexList.has(value)
+        endmethod
+        method hasIndex takes integer index returns boolean
+            return 0 <= index and index < .size
+        endmethod
+        method getRandom takes nothing returns integer
+            if .size == 0 then
+                return 0
+            endif
+            
+            return .valueList[GetRandomInt(0, .size - 1)]
+        endmethod
+        method getIndex takes integer value returns integer
+            if not .indexList.has(value) then
+                return -1
+            endif
+            
+            return .indexList[value]
+        endmethod
+        method iterator takes nothing returns Iterator
+            return SetIterator.create(this)
+        endmethod
+        
+        method add takes integer value returns boolean
+            local integer index
+            local integer tempValue
+            
+            if .indexList.has(value) then
+                return false
+            endif
+            
+            set .size = .size + 1
+            
+            // assume last index
+            set index = .size - 1
+            if .ordered then
+                // shift values up
+                loop
+                    exitwhen index == 0
+                    set tempValue = .valueList[index - 1]
+                    exitwhen tempValue <= value
+                    set .valueList[index] = tempValue
+                    set .indexList[tempValue] = index
+                    set index = index - 1
+                endloop
+            endif
+            
+            set .valueList[index] = value
+            set .indexList[value] = index
+            return true
+        endmethod
+        method addSet takes thistype other returns nothing
+            local integer index = 0
+            
+            loop
+                exitwhen index == other.size
+                call .add(other[index])
+                set index = index + 1
+            endloop
+        endmethod
+        method remove takes integer value returns boolean
+            local integer index
+            local integer tempValue
+            
+            if not .indexList.has(value) then
+                return false
+            endif
+            
+            set index = .indexList[value]
+            
+            if .ordered then
+                // shift values down
+                loop
+                    exitwhen index >= .size - 1
+                    set tempValue = .valueList[index + 1]
+                    set .valueList[index] = tempValue
+                    set .indexList[tempValue] = index
+                    set index = index + 1
+                endloop
+            else
+                // if this isn't the last value
+                if index != .size - 1 then
+                    // move the last value to current index
+                    set tempValue = .valueList[.size - 1]
+                    
+                    set .valueList[index] = tempValue
+                    set .indexList[tempValue] = index
+                endif
+            endif
+            
+            set .size = .size - 1
+            call .indexList.remove(value)
+            return true
+        endmethod
+        method clear takes nothing returns nothing
+            call .valueList.flush()
+            call .indexList.flush()
+            
+            set .size = 0
+        endmethod
+        
+        static method create takes boolean ordered returns thistype
+            local thistype this = allocate()
+            
+            set .valueList = Table.create()
+            set .indexList = Table.create()
+            set .ordered = ordered
+            set .size = 0
+            
+            return this
+        endmethod
+        static method operator [] takes thistype other returns thistype
+            local thistype this = create(other.ordered)
+            
+            call .addSet(other)
+            return this
+        endmethod
+        method destroy takes nothing returns nothing
+            call .valueList.destroy()
+            call .indexList.destroy()
+            call .deallocate()
+        endmethod
+    endstruct
+    
+    struct SetIterator extends Iterator
+        
+        private Set st
+        private integer index
+        
+        static method create takes Set st returns thistype
+            local thistype this = allocate()
+            
+            set .st = st
+            set .index = -1
+            return this
+        endmethod
+        
+        method hasNext takes nothing returns boolean
+            return .index + 1 < .st.size
+        endmethod
+        method next takes nothing returns integer
+            set .index = .index + 1
+            
+            return .st[.index]
+        endmethod
+    endstruct
+    
+    //! textmacro DEFINE_STRUCT_SET takes ACCESS, NAME, TYPE, NAME_DESTROYABLE
+        
+        $ACCESS$ struct $NAME$ extends array
+            
+            private delegate Set st
+            
+            static method create takes boolean ordered returns thistype
+                local thistype this = Set.create(ordered)
+                set .st = this
+                return this
+            endmethod
+            method operator [] takes integer index returns $TYPE$
+                return .st[index]
+            endmethod
+            
+            static if $NAME_DESTROYABLE$ then
+                method nestedDestroy takes nothing returns nothing
+                    local Iterator it = Set(this).iterator()
+                    loop
+                        exitwhen not it.hasNext()
+                        call $TYPE$(it.next()).destroy()
+                    endloop
+                    call it.destroy()
+                    
+                    call Set(this).destroy()
+                endmethod
+            endif
+        endstruct
+        
+    //! endtextmacro
+    
+endlibrary

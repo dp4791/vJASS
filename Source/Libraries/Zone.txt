@@ -1,0 +1,290 @@
+library Zone uses Alloc, CondList, Table, RegionalFog
+/*  @ Zone: 지역 @
+
+    Constructor: 생성자
+
+        Zone.create(real minX, real minY, real maxX, real maxY) -> Zone
+        * 최소/최대 좌표를 가지고 지역 생성 후 반환
+        
+        Zone.createFromRect(rect rct) -> Zone
+        * rct의 꼭짓점 기준으로 지역 생성 후 반환
+
+    Method: 멤버 함수
+        
+        .registerEnter(code c) -> null
+        * 지역에 입장시 발동하는 코드 등록
+        
+        .countUnit(filterfunc f) -> integer
+        * 지역 내에서 필터 함수 f를 만족시키는 유닛 수 반환
+        
+        .containsPoint(real x, real y) -> boolean
+        * (x, y) 좌표가 지역 내에 포함된다면 true 반환, 아닐시 false 반환.
+        
+        .containsUnit(unit u) -> boolean
+        * 유닛의 위치가 지역 내에 포함된다면 true 반환, 아니면 false 반환.
+
+        .moveTo(real x, real y) -> null
+        * (x, y) 좌표를 중심으로 지역을 이동
+*/
+
+    globals
+        //! runtextmacro CreateZones()
+    endglobals
+    
+    private module M
+        private static method onInit takes nothing returns nothing
+            set convertTable = Table.create()
+            
+            //! runtextmacro RegisterZones()
+        endmethod
+    endmodule
+    
+    struct Zone extends array
+        implement Alloc
+        
+        readonly rect rct
+        
+        private boolean ref
+        private trigger trg
+        private region reg
+        private CondList cndList
+        private Table fogData
+        
+        readonly real minX
+        readonly real minY
+        readonly real maxX
+        readonly real maxY
+        
+        real randomOffset
+        integer data
+        
+        private static Table convertTable = 0
+        
+        static method operator entered takes nothing returns thistype
+            return convertTable[GetHandleId(GetTriggeringTrigger())]
+        endmethod
+        
+        method operator fogDisabled= takes boolean on returns nothing
+            local integer i
+            
+            if on and .fogData == 0 then
+                set .fogData = Table.create()
+                
+                set i = MAX_PLAYERS
+                loop
+                    set i = i - 1
+                    set .fogData.fogmodifier[i] = CreateFogModifierRect(P[i], FOG_OF_WAR_VISIBLE, .rct, true, false)
+                    
+                    call FogModifierStart(.fogData.fogmodifier[i])
+                    exitwhen i == 0
+                endloop
+            elseif not on and .fogData != 0 then
+                set i = MAX_PLAYERS
+                loop
+                    set i = i - 1
+                    call FogModifierStop(.fogData.fogmodifier[i])
+                    call DestroyFogModifier(.fogData.fogmodifier[i])
+                    exitwhen i == 0
+                endloop
+                
+                call .fogData.destroy()
+                set .fogData = 0
+            endif
+        endmethod
+        
+        method operator centerX takes nothing returns real
+            return (.minX + .maxX) / 2.
+        endmethod
+        method operator centerY takes nothing returns real
+            return (.minY + .maxY) / 2.
+        endmethod
+        
+        method operator xLength takes nothing returns real
+            return (.maxX - .minX)
+        endmethod
+        method operator yLength takes nothing returns real
+            return (.maxY - .minY)
+        endmethod
+        
+        method operator randomX takes nothing returns real
+            return GetRandomReal(.minX + .randomOffset, .maxX - .randomOffset)
+        endmethod
+        method operator randomY takes nothing returns real
+            return GetRandomReal(.minY + .randomOffset, .maxY - .randomOffset)
+        endmethod
+        
+        method getDistributedX takes real ratio returns real
+            local real xLength = .xLength
+            local real yLength = .yLength
+            
+            local real totalDistance = 2 * xLength + 2. * yLength
+            local real curDistance = ModuloReal(ratio, 1.) * totalDistance
+            
+            if curDistance <= xLength then
+                return .minX + curDistance
+            elseif curDistance <= xLength + yLength then
+                return .maxX
+            elseif curDistance <= 2 * xLength + yLength then
+                return .maxX - (curDistance - xLength - yLength)
+            else
+                return .minX
+            endif
+        endmethod
+        method getDistributedY takes real ratio returns real
+            local real xLength = .xLength
+            local real yLength = .yLength
+            
+            local real totalDistance = 2 * xLength + 2. * yLength
+            local real curDistance = ModuloReal(ratio, 1.) * totalDistance
+            
+            if curDistance <= xLength then
+                return .maxY
+            elseif curDistance <= xLength + yLength then
+                return .maxY - (curDistance - xLength)
+            elseif curDistance <= 2 * xLength + yLength then
+                return .minY
+            else
+                return .minY + (curDistance - 2 * xLength - yLength)
+            endif
+        endmethod
+        
+        method destroy takes nothing returns nothing
+            local integer i
+            
+            if .trg != null then
+                call DestroyTrigger(.trg)
+                call RemoveRegion(.reg)
+                call .cndList.destroy()
+                
+                set .trg = null
+                set .reg = null
+            endif
+            
+            if not .ref then
+                call RemoveRect(.rct)
+            endif
+            
+            set .fogDisabled = false
+            
+            call .deallocate()
+            
+            set .rct = null
+        endmethod
+        
+        method registerEnter takes code c returns nothing
+            if .trg == null then
+                set .trg = CreateTrigger()
+                set .reg = CreateRegion()
+                set .cndList = CondList.create()
+                set convertTable[GetHandleId(.trg)] = this
+                
+                call RegionAddRect(.reg, .rct)
+                call TriggerRegisterEnterRegion(.trg, .reg, null)
+            endif
+            
+            call .cndList.add(.trg, c)
+        endmethod
+        method countUnit takes code filterFunc returns integer
+            local integer count = 0
+            local unit u
+            
+            call GroupEnumUnitsInRect(G, .rct, Filter(filterFunc))
+            loop
+                set u = FirstOfGroup(G)
+                exitwhen u == null
+                call GroupRemoveUnit(G, u)
+                set count = count + 1
+            endloop
+            
+            return count
+        endmethod
+        
+        method containsPoint takes real x, real y returns boolean
+            return .minX < x and x < .maxX and .minY < y and y < .maxY
+        endmethod
+        method containsUnit takes unit u returns boolean
+            return .containsPoint(GetUnitX(u), GetUnitY(u))
+        endmethod
+        
+        method moveTo takes real centerX, real centerY returns nothing
+            call MoveRectTo(.rct, centerX, centerY)
+        endmethod
+        method addFog takes FogData fogData, real blendWidth returns nothing
+            set Fog.createFromRect(fogData, .rct).blendWidth = blendWidth
+        endmethod
+        method addWeather takes integer effectID returns nothing
+            call AddWeatherEffect(.rct, effectID) 
+        endmethod
+        
+        static method createFromRect takes rect rct returns thistype
+            local thistype this = allocate()
+            
+            set .ref = true
+            set .rct = rct
+            set .minX = GetRectMinX(rct)
+            set .minY = GetRectMinY(rct)
+            set .maxX = GetRectMaxX(rct)
+            set .maxY = GetRectMaxY(rct)
+            set .randomOffset = 0.
+            
+            return this
+        endmethod
+        static method create takes real minX, real minY, real maxX, real maxY returns thistype
+            local thistype this = allocate()
+            
+            set .ref = false
+            set .rct = Rect(minX, minY, maxX, maxY)
+            set .minX = minX
+            set .minY = minY
+            set .maxX = maxX
+            set .maxY = maxY
+            set .randomOffset = 0.
+            
+            return this
+        endmethod
+        method createCopy takes nothing returns thistype
+            return create(.minX, .minY, .maxX, .maxY)
+        endmethod
+        
+        implement M
+    endstruct
+    
+    struct ZoneList extends array
+        implement SimpleAlloc
+        
+        readonly integer count
+        
+        private Table list
+        
+        method containsPoint takes real x, real y returns boolean
+            local boolean checked = false
+            local integer i = .count
+            
+            loop
+                exitwhen i == 0
+                set i = i - 1
+                set checked = Zone(.list[i]).containsPoint(x, y)
+                exitwhen checked
+            endloop
+            
+            return checked
+        endmethod
+        method containsUnit takes unit u returns boolean
+            return .containsPoint(GetUnitX(u), GetUnitY(u))
+        endmethod
+        
+        method add takes Zone zone returns nothing
+            set .list[.count] = zone
+            set .count = .count + 1
+        endmethod
+        
+        static method create takes nothing returns thistype
+            local thistype this = allocate()
+            
+            set .list = Table.create()
+            set .count = 0
+            return this
+        endmethod
+    endstruct
+
+endlibrary

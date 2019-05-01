@@ -1,0 +1,155 @@
+library Recipe uses Alloc, Table, TimerUtils, SystemFunctions
+
+    struct Recipe extends array
+    
+		readonly Table data
+		readonly integer result
+		readonly integer count
+		readonly integer totalCount
+        
+        private static Table nameToId
+        readonly static Table relatedLists = 0
+		readonly static integer stack = 0
+        
+        static method isValidMat takes integer itemId returns boolean
+            return relatedLists.has(itemId)
+        endmethod
+        
+        static method isValidItemName takes string itemName returns boolean
+            return nameToId.has(StringHash(StringCase(itemName, false)))
+        endmethod
+        
+        static method convertItemNameToId takes string itemName returns integer
+            local integer hash = StringHash(StringCase(itemName, false))
+            
+            if nameToId.has(hash) then
+                return nameToId[hash]
+            endif
+            
+            return 0
+        endmethod
+        
+        method addToRelatedList takes integer itemId returns nothing
+            local Table relatedList
+            local integer relatedCount
+            local string itemName
+            
+            if relatedLists.has(itemId) then
+                set relatedList = relatedLists[itemId]
+            else
+                set relatedList = Table.create()
+                set relatedLists[itemId] = relatedList
+                set itemName = StripColorCode(GetObjectName(itemId))
+                set itemName = StringCase(itemName, false)
+                
+                set nameToId[StringHash(itemName)] = itemId
+            endif
+            
+            set relatedCount = relatedList[0] + 1
+            set relatedList[0] = relatedCount
+            set relatedList[relatedCount] = this
+        endmethod
+        
+        method getMatId takes integer slot returns integer
+            return .data[2 * slot]
+        endmethod
+        method getMatCount takes integer slot returns integer
+            return .data[2 * slot + 1]
+        endmethod
+        
+		method add takes integer itemId, integer c returns thistype
+			set .data[2 * .count] = itemId
+			set .data[2 * .count + 1] = c
+			set .count = .count + 1
+			set .totalCount = .totalCount + c
+            
+            call .addToRelatedList(itemId)
+			return this
+		endmethod
+        
+		static method register takes integer result returns thistype
+			local thistype this = stack + 1
+            
+			set .data = Table.create()
+			set .result = result
+			set .count = 0
+			set .totalCount = 0
+			set stack = this
+            
+            call .addToRelatedList(result)
+			return this
+		endmethod
+        
+        private static method load takes nothing returns nothing
+            local timer t = GetExpiredTimer()
+            local integer count = GetTimerData(GetExpiredTimer())
+            
+            //! runtextmacro RegisterForgeRecipe()
+                call ReleaseTimer(t)
+                
+                set t = null
+            endif
+            
+            if t != null then
+                call SetTimerData(t, count + 1)
+                
+                set t = null
+            endif
+        endmethod
+        
+		private static method onInit takes nothing returns nothing
+            set relatedLists = Table.create()
+            set nameToId = Table.create()
+            
+            call TimerStart(NewTimerEx(0), .125, true, function thistype.load)
+		endmethod
+    endstruct
+    
+    struct RecipeList extends array
+        implement Alloc
+        
+        readonly Table list
+        readonly integer count
+        
+        method add takes Recipe recipe returns boolean
+            if not .list.has(2 * recipe + 1) then
+                set .list[2 * .count] = recipe
+                set .list[2 * recipe + 1] = .count
+                set .count = .count + 1
+                
+                return true
+            endif
+            
+            return false
+        endmethod
+        
+        method add_related takes integer item_id returns nothing
+            local Table related_list = Recipe.relatedLists[item_id]
+            local integer related_count = related_list[0]
+            local integer cur_count = 0
+            
+            loop
+                exitwhen cur_count == related_count
+                set cur_count = cur_count + 1
+                call .add(related_list[cur_count])
+            endloop
+        endmethod
+        method get takes integer index returns Recipe
+            return .list[2 * index]
+        endmethod
+        
+        method destroy takes nothing returns nothing
+            call .list.destroy()
+            call .deallocate()
+        endmethod
+        
+        static method create takes nothing returns thistype
+            local thistype this = allocate()
+            
+            set .list = Table.create()
+            set .count = 0
+            return this
+        endmethod
+    endstruct
+    
+endlibrary

@@ -1,0 +1,217 @@
+library ClosetSection uses ClosetItem
+
+    struct ClosetSectionType extends array
+		
+        readonly string name
+        readonly string description
+        readonly Advent enabler
+        readonly Advent disabler
+		readonly integer itemTypeCount
+        
+        private Table itemTypeList
+		
+        readonly static thistype max = 0
+        
+        static method create takes integer index, string name returns thistype
+            local thistype this = index
+            
+            if .itemTypeList == 0 then
+                set .name = name
+                set .description = ""
+                set .itemTypeCount = 0
+                
+                set .itemTypeList = Table.create()
+                
+                if integer(max) < integer(this) then
+                    set max = this
+                endif
+            debug else
+                debug call BJDebugMsg("create - used duplicate index")
+            endif
+            
+            return this
+        endmethod
+		
+        method addDescription takes string description returns nothing
+            set .description = description
+        endmethod
+		
+        method addItemType takes ClosetItemType itemType returns nothing
+            if not .itemTypeList.boolean.has(itemType) then
+                set .itemTypeCount = .itemTypeCount + 1
+                set .itemTypeList.boolean[itemType] = true
+                set itemType.sectionType = this
+            debug else
+                debug call BJDebugMsg("addItemType - same itemType: " + A2S(itemType.id))
+            endif
+        endmethod
+		
+        method registerEnabler takes code c returns nothing
+            if .enabler == 0 then
+                set .enabler = Advent.createSimple(c)
+            debug else
+                debug call BJDebugMsg("registerEnabler - double")
+            endif
+        endmethod
+		
+        method registerDisabler takes code c returns nothing
+            if .disabler == 0 then
+                set .disabler = Advent.createSimple(c)
+            debug else
+                debug call BJDebugMsg("registerDisabler - double")
+            endif
+        endmethod
+    endstruct
+	
+    struct ClosetSection extends array
+        implement Alloc
+		
+        readonly boolean allocated
+        readonly User user
+        readonly ClosetItem head
+        readonly delegate ClosetSectionType sectionType
+		
+        private Dialog dialog
+        
+        private method clearDialog takes nothing returns nothing
+            if .dialog != 0 then
+                call .dialog.hide(P[this])
+                call .dialog.destroy()
+            
+                set .dialog = 0
+            endif
+        endmethod
+        
+        static method create takes ClosetSectionType sectionType, User user returns thistype
+            local thistype this = allocate()
+			
+            set .allocated = true
+            set .user = user
+            set .head = ClosetItem.createHead()
+            set .sectionType = sectionType
+			
+            return this
+        endmethod
+		
+        private ClosetItem lastItem
+        private static method onClick takes nothing returns boolean
+            local Dialog dg = Dialog.get()
+            local thistype this = dg.data
+            local integer buttonData = dg.getResult()
+            
+            if buttonData == -1 then
+                call .displayEx()
+            elseif buttonData != -2 then
+                call ClosetItem(buttonData).display()
+            endif
+            
+            return false
+        endmethod
+        
+        private method displayEx takes nothing returns nothing
+            local integer hotkeyNumber = 1
+            local integer hotkey = HK_1
+            
+            call .clearDialog()
+            
+            set .dialog = Dialog.create()
+            set .dialog.data = this
+            
+            call .dialog.setMessage(.name + " (" + I2S(.head.nodeCount) + "/" + I2S(.itemTypeCount) + ")\n\n" + .description)
+			
+            loop
+                exitwhen .lastItem == .head
+                
+                if .lastItem.active then
+                    call .dialog.addButton("|c00c0c0c0[" + I2S(hotkeyNumber) + "]|r |cff88ff88" + .lastItem.name + "|r", hotkey, .lastItem)
+                else
+                    call .dialog.addButton("|c00c0c0c0[" + I2S(hotkeyNumber) + "]|r " + .lastItem.name, hotkey, .lastItem)
+                endif
+                
+                set hotkeyNumber = hotkeyNumber + 1
+                set hotkey = hotkey + 1
+                set .lastItem = .lastItem.next
+                exitwhen hotkey == HK_8
+            endloop
+            
+            if hotkey == HK_8 and .lastItem != .head then
+                static if ENGLISH then
+                    call .dialog.addButton("|c00c0c0c0[Q]|r Next", HK_Q, -1)
+                else
+                    call .dialog.addButton("|c00c0c0c0[Q]|r 다음", HK_Q, -1)
+                endif
+            endif
+			
+            static if ENGLISH then
+                call .dialog.addButton("|c00c0c0c0[ESC]|r Cancel", HK_ESC, -2)
+            else
+                call .dialog.addButton("|c00c0c0c0[ESC]|r 취소", HK_ESC, -2)
+            endif
+            
+            call .dialog.addAction(function thistype.onClick)
+            call .dialog.show(.user.player)
+        endmethod
+		method display takes nothing returns nothing
+            set .lastItem = .head.next
+            
+            call .displayEx()
+        endmethod
+        
+        method addItem takes ClosetItem i returns boolean
+            local ClosetItem otherItem
+			
+            set otherItem = .head.next
+            loop
+                exitwhen otherItem == .head
+				
+                if otherItem.id == i.id then
+                    return false
+                endif
+				
+                set otherItem = otherItem.next
+            endloop
+			
+            call .head.link(i)
+            return true
+        endmethod
+        
+        method hasItemById takes integer itemId returns boolean
+            local ClosetItem otherItem
+			
+            set otherItem = .head.next
+            loop
+                exitwhen otherItem == .head
+				
+                if otherItem.id == itemId then
+                    return true
+                endif
+				
+                set otherItem = otherItem.next
+            endloop
+			
+            return false
+        endmethod
+		
+        method destroy takes nothing returns nothing
+            local ClosetItem i
+            
+            if .allocated then
+                call .clearDialog()
+                
+                set i = .head.next
+                loop
+                    exitwhen i == .head
+                    call i.destroy()
+                    set i = i.next
+                endloop
+                
+                call .clearDialog()
+                call .head.destroyHead()
+                call .deallocate()
+                
+                set .allocated = false
+            endif
+        endmethod
+    endstruct
+	
+endlibrary

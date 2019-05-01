@@ -1,0 +1,234 @@
+scope UnholyBlast
+
+/* 설정 */
+
+    globals
+        private constant real MAX_DISTANCE_OFFSET = 150.
+        private constant real EXPLOSION_RADIUS = 275.
+        
+        private constant real MISSILE_SPEED = 0.
+        private constant real MISSILE_ACCEL = 25000.
+        
+        private constant integer MAX_COMBO = 10
+    endglobals
+    
+    private function GetDamage takes unit caster, integer abilLv returns real
+        return (5.00 * abilLv) * GetHeroInt(caster, true)
+    endfunction
+    
+    private function GetComboStunDuration takes unit caster, integer abilLv, integer comboCount returns real
+        if comboCount >= 3 then
+            return 0.25
+        else
+            return 0.
+        endif
+    endfunction
+    
+    private function GetComboResetDelay takes unit caster, integer abilLv returns real
+        return 0.50
+    endfunction
+    
+    /* 디버프 받는 데미지 증가량 (%) */
+    private function GetDebuffDamageTakenBonus takes unit caster, integer abilLv returns real
+        return 8.
+    endfunction
+    
+    /* 디버프 지속 시간 */
+    private function GetDebuffDuration takes unit caster, integer abilLv returns real
+        return 3.
+    endfunction
+    
+/* 설정 끝 */
+    
+    globals
+        private constant integer DEBUFF_ABIL_ID = 'A01A'
+        private constant integer DEBUFF_BUFF_ID = 'B00B'
+        
+        public constant integer ABIL_ID = 'A00I'
+    endglobals
+    
+    private struct Debuff extends array
+        
+        private Stat dtMod
+        
+        readonly static BuffType buffType = 0
+        
+        private static method onRemove takes nothing returns nothing
+            local Buff bf = Advent.value
+            local thistype this = bf.targetId
+            
+            call .dtMod.destroy()
+        endmethod
+        private static method onStack takes nothing returns nothing
+            local Buff bf = Advent.value
+            local thistype this = bf.targetId
+            
+            set .dtMod.percent = GetDebuffDamageTakenBonus(bf.source, GetUnitAbilityLevel(bf.source, ABIL_ID))
+        endmethod
+        private static method onApply takes nothing returns nothing
+            local Buff bf = Advent.value
+            local thistype this = bf.targetId
+            
+            set .dtMod = Status(this).modDamageTakenEx(0.)
+        endmethod
+        
+        private static method onInit takes nothing returns nothing
+            set buffType = BuffType.create()
+            set buffType.category = BUFF_CATEGORY_DEBUFF
+            set buffType.abilId = DEBUFF_ABIL_ID
+            set buffType.buffId = DEBUFF_BUFF_ID
+            
+            call buffType.registerApplyEvent(function thistype.onApply, PRIORITY_LAST)
+            call buffType.registerStackEvent(function thistype.onStack, PRIORITY_LAST)
+            call buffType.registerRemoveEvent(function thistype.onRemove, PRIORITY_LAST)
+        endmethod
+    endstruct
+    
+    private struct Projectile extends array
+        
+        private timer runner
+        private Effect fx
+        private real damage
+        private real stunDuration
+        private real debuffDuration
+        
+        static method onRemove takes Missile missile returns nothing
+            local thistype this = missile
+            
+            call ReleaseTimer(.runner)
+            call .fx.destroy()
+            
+            set .runner = null
+        endmethod
+        
+        static method onFinish takes Missile missile returns boolean
+            local thistype this = missile
+            local unit u
+        
+            //! runtextmacro GroupMacro("u", "missile.x", "missile.y", "EXPLOSION_RADIUS")
+                if IsHittable(u, missile.source) then
+                    call Damage.spellText(missile.source, u, .damage, false, GetRandomReal(10, 15), "|c0097e8a6")
+                    call Buff.apply(missile.source, u, Debuff.buffType, .debuffDuration)
+                    
+                    if .stunDuration > 0. then
+                        call Stun(u, .stunDuration)
+                    endif
+                    
+                    call DestroyEffect(AddSpecialEffectTargetLocal(GetOwningPlayer(missile.source), /*
+                    */ "Abilities\\Weapons\\GreenDragonMissile\\GreenDragonMissile.mdl", u, "origin"))
+                endif
+            //! runtextmacro GroupMacroEnd()
+            
+            call xefx.createFX("Effects\\CenarionFury.mdx", missile.x, missile.y, EXPLOSION_RADIUS / 175.).recolor(255, 255, 255, 155).destroy()
+            call Camera[GetOwningPlayer(missile.source)].shake(45, 0.15)
+            return true
+        endmethod
+        
+        implement MissileStruct
+        
+        private static method triggerFire takes nothing returns nothing
+            local thistype this = GetTimerData(GetExpiredTimer())
+            local Missile missile = this
+            
+            set missile.speed = MISSILE_SPEED
+            set missile.accel = MISSILE_ACCEL
+        endmethod
+        
+        static method fire takes unit source, real startX, real startY, real startZ, real endX, real endY, real damage, real stunDuration, real debuffDuration, /*
+                              */ real curveRatio, real fireDelay returns nothing
+            local Missile missile = Missile.createEx(startX, startY, startZ, endX, endY, 0.)
+            local thistype this = missile
+            
+            set missile.source = source
+            set missile.fx.fxpath = "Abilities\\Weapons\\GreenDragonMissile\\GreenDragonMissile.mdl"
+            set missile.fx.scale = 1.25
+            set missile.arc = 0.50 - 0.50 * RAbsBJ(curveRatio)
+            set missile.curve = -0.75 * curveRatio
+            
+            set .runner = NewTimerEx(this)
+            set .fx = Effect.createTarget("Abilities\\Weapons\\IllidanMissile\\IllidanMissile.mdl", missile.fx.dummy, "origin")
+            set .damage = damage
+            set .stunDuration = stunDuration
+            set .debuffDuration = debuffDuration
+            
+            call TimerStart(.runner, fireDelay, false, function thistype.triggerFire)
+            call xefx.createZ("Abilities\\Weapons\\GreenDragonMissile\\GreenDragonMissile.mdl", missile.fx.x, missile.fx.y, missile.fx.z, 1.25).destroy()
+            call launch(missile)
+        endmethod
+    endstruct
+    
+    private struct Skill extends array
+        implement UnitIndexHelper
+        
+        private timer comboTimer
+        private integer comboCount
+        
+        private static method resetCombo takes nothing returns nothing
+            local thistype this = ReleaseTimer(GetExpiredTimer())
+            
+            set .comboTimer = null
+            set .comboCount = 0
+        endmethod
+        
+        private static method onEffect takes nothing returns nothing
+            local thistype this = GetUnitId(GetTriggerUnit())
+            
+            local real casterX = GetUnitX(.unit)
+            local real casterY = GetUnitY(.unit)
+            local real casterZ = GetUnitFlyHeight(.unit)
+            
+            local real castX = GetSpellTargetX()
+            local real castY = GetSpellTargetY()
+            local real castAngle = Atan2(castY - casterY, castX - casterX)
+            local real castDist = GetDistanceEx(castX - casterX, castY - casterY)
+            local real angle
+            local real dist
+            local real startX
+            local real startY
+            
+            local integer abilLv = GetUnitAbilityLevel(.unit, ABIL_ID)
+            local real damage = GetDamage(.unit, abilLv)
+            local real stunDuration
+            local real debuffDuration = GetDebuffDuration(.unit, abilLv)
+            
+            local integer i
+            
+            if .comboTimer == null then
+                set .comboTimer = NewTimerEx(this)
+                set .comboCount = 0
+            endif
+            
+            if .comboCount < MAX_COMBO then
+                set .comboCount = .comboCount + 1
+                
+                if .comboCount > 1 then
+                    call CreateTT(.unit, "|cffbaecc3" + I2S(.comboCount) + " COMBO|r", 12, 255, 255, 255)
+                endif
+            endif
+            
+            set i = 0
+            loop
+                exitwhen i == .comboCount
+                set i = i + 1
+                set stunDuration = GetComboStunDuration(.unit, abilLv, i)
+                
+                /* get random point */
+                set angle = castAngle + GetRandomReal(0.5 * bj_PI, 1.5 * bj_PI)
+                set dist = SquareRoot(GetRandomReal(0, MAX_DISTANCE_OFFSET * MAX_DISTANCE_OFFSET))
+                set startX = casterX + dist * Cos(angle)
+                set startY = casterY + dist * Sin(angle)
+                
+                call Projectile.fire(.unit, startX, startY, casterZ + GetRandomReal(60, 150), castX, castY, damage, stunDuration, debuffDuration, /*
+                                  */ Sin(castAngle - angle) * Atan2(dist, castDist), 0.25 + 0.10 * (i - 1))
+            endloop
+            
+            call TimerStart(.comboTimer, GetComboResetDelay(.unit, abilLv), false, function thistype.resetCombo)
+        endmethod
+        
+        private static method onInit takes nothing returns nothing
+            call RegisterSpellEffectEvent(ABIL_ID, function thistype.onEffect)
+            call PreloadAbility(ABIL_ID)
+        endmethod
+    endstruct
+    
+endscope

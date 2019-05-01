@@ -1,0 +1,247 @@
+scope Harvest
+
+/* 설정 */
+
+    globals
+        private constant real MISSILE_CURVE = 0.15
+        
+        private constant real DAMAGE_PERIOD = 0.125
+        
+        private constant real MAX_TETHER_RADIUS = 2500.
+    endglobals
+    
+    private function GetDamagePerSecond takes unit caster returns real
+        return 1.00 * Status[caster].damage
+    endfunction
+    
+    private function GetSoulAbsorbedPerSecond takes unit caster, unit target returns real
+        if IsBoss(target) then
+            return 10.
+        else
+            return 5.
+        endif
+    endfunction
+    
+    private function GetCollisionRadius takes unit caster returns real
+        return 250.
+    endfunction
+    
+    private function GetMissileSpeed takes unit caster, boolean inContact returns real
+        if inContact then
+            return 600.
+        else
+            return 1600.
+        endif
+    endfunction
+    
+    /* 디버프 받는 회복량 증가량 (%) */
+    private function GetDebuffHealReceivedBonus takes unit caster returns real
+        return -40.
+    endfunction
+    
+    /* 디버프 지속 시간 */
+    private function GetDebuffDuration takes unit caster returns real
+        return 0.375
+    endfunction
+
+/* 설정 끝 */
+    
+    private function GetTagSize takes real soul returns real
+        return 8.00 + soul / 8.
+    endfunction
+    
+    globals
+        private constant real SPEED_RESET_DELAY = 0.25
+        
+        private constant integer STAGE_FLY = 0
+        private constant integer STAGE_RETURN = 1
+        
+        private constant integer DEBUFF_ABIL_ID = 'A01E'
+        private constant integer DEBUFF_BUFF_ID = 'B00D'
+        
+        private constant integer HERO_UNIT_ID = 'H007'
+        public constant integer ABIL_ID = 'A00X'
+    endglobals
+    
+    private struct Debuff extends array
+        
+        private Stat htMod
+        
+        readonly static BuffType buffType = 0
+        
+        private static method onRemove takes nothing returns nothing
+            local Buff bf = Advent.value
+            local thistype this = bf.targetId
+            
+            call .htMod.destroy()
+        endmethod
+        private static method onApply takes nothing returns nothing
+            local Buff bf = Advent.value
+            local thistype this = bf.targetId
+            
+            set .htMod = Status(this).modHealReceivedEx(GetDebuffHealReceivedBonus(bf.source))
+        endmethod
+        
+        private static method onInit takes nothing returns nothing
+            set buffType = BuffType.create()
+            set buffType.category = BUFF_CATEGORY_DEBUFF
+            set buffType.abilId = DEBUFF_ABIL_ID
+            set buffType.buffId = DEBUFF_BUFF_ID
+            
+            call buffType.registerApplyEvent(function thistype.onApply, PRIORITY_LAST)
+            call buffType.registerRemoveEvent(function thistype.onRemove, PRIORITY_LAST)
+        endmethod
+    endstruct
+    
+    private struct Skill extends array
+    
+        private texttag tag
+        private integer abilLv
+        private integer stage
+        private integer damageTick
+        private real collision
+        private real damage
+        private real soul
+        
+        private method updateTag takes nothing returns nothing
+            local Missile missile = this
+            local real x = missile.fx.x
+            local real y = missile.fx.y
+            local real z = missile.z
+            
+            call SetTextTagText(.tag, "|cffa0c895" + I2S(R2I(.soul)) + "|r", .0023 * GetTagSize(.soul))
+            call SetTextTagPos(.tag, x, y, z)
+        endmethod
+        static method onRemove takes Missile missile returns nothing
+            local thistype this = missile
+            
+            call DestroyTextTag(.tag)
+            
+            set .tag = CreateTextTag()
+            
+            call .updateTag()
+            call SetPlayerAbilityAvailable(GetOwningPlayer(missile.source), ABIL_ID, true)
+            call SetTextTagVisibility(.tag, GetLocalPlayer() == GetOwningPlayer(missile.source))
+            call SetTextTagPermanent(.tag, false)
+            call SetTextTagFadepoint(.tag, 0.25)
+            call SetTextTagLifespan(.tag, 0.50)
+            
+            set .tag = null
+        endmethod
+        
+        static method onFinish takes Missile missile returns boolean
+            local thistype this = missile
+            
+            if .stage == STAGE_FLY then
+                set .stage = STAGE_RETURN
+                set missile.target = missile.source
+                
+                call missile.relaunch(GetUnitX(missile.source), GetUnitY(missile.target), GetUnitFlyHeight(missile.target) + 60.)
+                return false
+            elseif .stage == STAGE_RETURN then
+                call SoulCollector_Skill[missile.source].absorbSoul(.soul)
+            endif
+        
+            return true
+        endmethod
+        
+        static method onPeriod takes Missile missile returns boolean
+            local thistype this = missile
+            local boolean hit = false
+            
+            local real x = missile.fx.x
+            local real y = missile.fx.y
+            local real z = missile.z
+            local unit u
+            
+            set .damageTick = ModuloInteger(.damageTick + 1, R2I(DAMAGE_PERIOD / CTL_PERIOD))
+            
+            if .damageTick == 0 then
+                call xefx.createZ("Effects\\RoundSlash_Green.mdl", x, y, z, .collision / 200.).timedDestroy(1.00)
+            endif
+            
+            //! runtextmacro GroupMacro("u", "x", "y", ".collision")
+                if IsHittable(u, missile.source) then
+                    set hit = true
+                    
+                    if .damageTick == 0 then
+                        set .soul = .soul + DAMAGE_PERIOD * GetSoulAbsorbedPerSecond(missile.source, u)
+                        
+                        call Damage.doAttack(missile.source, u, .damage)
+                        call Buff.apply(missile.source, u, Debuff.buffType, GetDebuffDuration(missile.source))
+                        
+                        call DestroyEffect(AddSpecialEffectTargetLocal(GetOwningPlayer(missile.source), /*
+                        */ "Abilities\\Spells\\Other\\Cleave\\CleaveDamageTarget.mdl", u, "chest"))
+                        call DestroyEffect(AddSpecialEffectTargetLocal(GetOwningPlayer(missile.source), /*
+                        */ "Effects\\Blood\\SmallBloodEx_NoSplat.mdl", u, "chest"))
+                    endif
+                endif
+            //! runtextmacro GroupMacroEnd()
+            
+            set missile.speed = GetMissileSpeed(missile.source, hit)
+            
+            call .updateTag()
+            
+            return not IsUnitInRangeXY(missile.source, x, y, MAX_TETHER_RADIUS)
+        endmethod
+        
+        implement MissileStruct
+        
+        private static method onEffect takes nothing returns nothing
+            local unit caster = GetTriggerUnit()
+            
+            local real casterX = GetUnitX(caster)
+            local real casterY = GetUnitY(caster)
+            local real casterZ = GetUnitFlyHeight(caster)
+            
+            local real castX = GetSpellTargetX()
+            local real castY = GetSpellTargetY()
+            
+            local Missile missile = Missile.createEx(casterX, casterY, casterZ + 60, castX, castY, 60.)
+            local thistype this = missile
+            
+            set .tag = CreateTextTag()
+            set .stage = STAGE_FLY
+            set .damageTick = 0
+            set .collision = GetCollisionRadius(caster)
+            set .damage = DAMAGE_PERIOD * GetDamagePerSecond(caster)
+            set .soul = 0.
+            
+            set missile.source = caster
+            set missile.speed = GetMissileSpeed(caster, false)
+            set missile.curve = MISSILE_CURVE
+            
+            if GetRandomInt(1, 2) == 1 then
+                call xefx.createZ("Effects\\MasiSlashL.mdl", casterX, casterY, casterZ + 90, 0.40).recolor(255, 255, 255, 27).destroy()
+            else
+                call xefx.createZ("Effects\\MasiSlashR.mdl", casterX, casterY, casterZ + 90, 0.40).recolor(255, 255, 255, 27).destroy()
+            endif
+            
+            call xefx.createZ("Effects\\WindSpin.mdl", casterX, casterY, casterZ + 45, 1.25).recolor(255, 255, 255, 105).destroy()
+            call Sound.createUnit(SoundType.create("Sounds\\HighSpeedMovement.mp3", 10, 10, 0.841), 30, caster)
+            call SetPlayerAbilityAvailable(GetOwningPlayer(caster), ABIL_ID, false)
+            call SetTextTagVisibility(.tag, GetLocalPlayer() == GetOwningPlayer(missile.source))
+            call .updateTag()
+            call launch(missile)
+            
+            set caster = null
+        endmethod
+        
+        private static method onSpawn takes nothing returns nothing
+            local Hero hero = Advent.value
+            
+            if hero.baseId == HERO_UNIT_ID then
+                call Status(hero).modArmorIgnore(100.)
+                call AddAbility(hero.unit, 'Abun') // remove attack ability
+                call AddAbility(hero.unit, ABIL_ID)
+            endif
+        endmethod
+        
+        private static method onInit takes nothing returns nothing
+            call Hero.registerSpawn(function thistype.onSpawn, PRIORITY_LAST)
+            call RegisterSpellEffectEvent(ABIL_ID, function thistype.onEffect)
+            call PreloadAbility(ABIL_ID)
+        endmethod
+    endstruct
+    
+endscope

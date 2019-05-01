@@ -1,0 +1,266 @@
+library SoulTransfer uses SpellMaker
+
+/* 설정 */
+
+    globals
+        /* 최대 연결 거리 */
+        private constant real MAX_TETHER_RANGE = 2000.
+        
+        /* 주기 */
+        private constant real TICK_PERIOD = 0.25
+    endglobals
+    
+    /* 초당 데미지 */
+    private function GetDamagePerSecond takes unit caster, integer abilLv returns real
+        return (25.00 + 5.00 * abilLv) * GetHeroInt(caster, true)
+    endfunction
+    
+    /* 초당 회복량 */
+    private function GetHealPerSecond takes unit caster, integer abilLv returns real
+        return (1.50 + 0.30 * abilLv) * GetHeroInt(caster, true)
+    endfunction
+    
+    /* 초당 영혼 흡수량 */
+    private function GetSoulAbsorbedPerSecond takes unit caster, integer abilLv, boolean allied returns real
+        if allied then
+            return 0.
+        else
+            return 15.
+        endif
+    endfunction
+    
+    /* 초당 영혼 소모량 */
+    private function GetSoulConsumedPerSecond takes unit caster, integer abilLv, boolean allied returns real
+        if allied then
+            return 40.
+        else
+            return 0.
+        endif
+    endfunction
+    
+    /* 최소 지속 시간 */
+    private function GetMinDuration takes unit caster, integer abilLv returns real
+        return 1.00
+    endfunction
+    
+/* 설정 끝 */
+
+    globals
+        private constant real LINK_FX_RADIUS = 150.
+        private constant integer LINK_FX_COUNT = 2
+        
+        private constant string ORDER_STRING = "cloudoffog"
+        public constant integer ABIL_ID = 'A00Y'
+    endglobals
+    
+    private struct Skill extends array
+        implement UnitIndexHelper
+        
+        private UnitIndex target
+        private Table linkList
+        private integer tick
+        private integer abilLv
+        private real amountPerTick
+        private real soulAbsorbedPerTick
+        private real soulConsumed
+        private real minDuration
+        
+        private method onRemove takes nothing returns nothing
+            local integer i
+            
+            set i = LINK_FX_COUNT
+            loop
+                exitwhen i == 0
+                set i = i - 1
+                call Link(.linkList[2 * i + 1]).destroy()
+                call xefx(.linkList[2 * i]).destroy()
+            endloop
+            
+            if GetUnitCurrentOrder(.unit) == OrderId(ORDER_STRING) then
+                call IssueImmediateOrder(.unit, "stop")
+            endif
+            
+            call .target.unlock()
+            call .linkList.destroy()
+        endmethod
+        
+        implement CTT
+        
+            local boolean exit
+            local Missile fxMissile
+            
+            local real sourceX
+            local real sourceY
+            local real targetX
+            local real targetY
+            local real difX
+            local real difY
+            
+            local real dist
+            local real angle
+            
+            local integer i
+            local real linkAngle
+            local real newSoul
+            local xefx linkFX
+            
+        implement CTTExpire
+            
+            set exit = false
+            set .tick = .tick + 1
+            
+            set sourceX = GetUnitX(.unit)
+            set sourceY = GetUnitY(.unit)
+            set targetX = GetUnitX(.target.unit)
+            set targetY = GetUnitY(.target.unit)
+            set difX = targetX - sourceX
+            set difY = targetY - sourceY
+            
+            set dist = SquareRoot(difX * difX + difY * difY)
+            set angle = Atan2(difY, difX)
+            
+            if dist > MAX_TETHER_RANGE then
+                set exit = true
+            elseif UnitAlive(.unit) and UnitAlive(.target.unit) and GetUnitCurrentOrder(.unit) == OrderId(ORDER_STRING) then
+                if ModuloInteger(.tick, R2I(TICK_PERIOD / CTL_PERIOD)) == 0 then
+                    if IsAlly(.target.unit, .unit) then
+                        call Heal.do(.unit, .target.unit, Status(this).periodicDamage * .amountPerTick)
+                    else
+                        call Damage.directSpell(.unit, .target.unit, Status(this).periodicDamage * .amountPerTick)
+                    endif
+                    
+                    call SoulCollector_Skill[.unit].absorbSoul(.soulAbsorbedPerTick)
+                    call DestroyEffect(AddSpecialEffectTargetLocal(GetOwningPlayer(.unit), "Abilities\\Spells\\Undead\\DeathCoil\\DeathCoilSpecialArt.mdl", .target.unit, "origin"))
+                endif
+                
+                if ModuloInteger(.tick, 4) == 0 then
+                    if IsAlly(.target.unit, .unit) then
+                        set fxMissile = Missile.createSimple(.unit, .target.unit)
+                    else
+                        set fxMissile = Missile.createSimple(.target.unit, .unit)
+                    endif
+                    
+                    set fxMissile.speed = 200.
+                    set fxMissile.accel = 5000.
+                    set fxMissile.arc = GetRandomReal(0., 0.6)
+                    set fxMissile.curve = GetRandomReal(-0.45, 0.45)
+                    
+                    set fxMissile.fx.fxpath = "Abilities\\Weapons\\AvengerMissile\\AvengerMissile.mdl"
+                    set fxMissile.fx.scale = 2.00
+                    
+                    call FXMissile.launch(fxMissile)
+                endif
+                
+                if ModuloInteger(.tick, 8) == 0 then
+                    call Sound.createUnit(SoundType.create("Abilities\\Spells\\Undead\\Possession\\PossessionMissileHit1.wav", 10, 10, 1.170),/*
+                                        */ 90, .unit)
+                endif
+                
+                set i = LINK_FX_COUNT
+                loop
+                    exitwhen i == 0
+                    set i = i - 1
+                    set linkAngle = angle + 0.25 * RAD + i * RAD / LINK_FX_COUNT
+                    set linkFX = .linkList[2 * i]
+                    set linkFX.x = sourceX + LINK_FX_RADIUS * Cos(linkAngle)
+                    set linkFX.x = sourceX + LINK_FX_RADIUS * Cos(linkAngle)
+                    set linkFX.angle = Atan2(targetY - linkFX.y, targetX - linkFX.x)
+                    
+                    call Link(.linkList[2 * i + 1]).update()
+                endloop
+                
+                set newSoul = Max(0, SoulCollector_Skill[.unit].soul - .soulConsumed)
+                set SoulCollector_Skill[.unit].soul = newSoul
+                
+                if .tick >= R2I(.minDuration / CTL_PERIOD) and (newSoul <= 0. or newSoul >= SoulCollector_Skill[.unit].maxSoul) then
+                    set exit = true
+                else
+                    call SetUnitFacingTimed(.unit, bj_RADTODEG * angle, 0.)
+                    call Hero(this).camera.flash(155, 255, 155, 0.25)
+                endif
+            else
+                set exit = true
+            endif
+            
+            if exit then
+                call .destroy()
+            endif
+            
+        implement CTTEnd
+        
+        private static method onCast takes nothing returns nothing
+            local thistype this = create(GetTriggerUnit())
+            local real sourceX = GetUnitX(.unit)
+            local real sourceY = GetUnitY(.unit)
+            local real targetX
+            local real targetY
+            local real difX
+            local real difY
+            
+            local real dist
+            local real angle
+            
+            local integer i
+            local real linkAngle
+            local real linkX
+            local real linkY
+            local xefx linkFX
+            local Link link
+            
+            set .target = GetUnitId(GetSpellTargetUnit())
+            set .linkList = Table.create()
+            set .tick = 0
+            set .abilLv = GetUnitAbilityLevel(.unit, ABIL_ID)
+            set .minDuration = GetMinDuration(.unit, .abilLv)
+            set targetX = GetUnitX(.target.unit)
+            set targetY = GetUnitY(.target.unit)
+            set difX = targetX - sourceX
+            set difY = targetY - sourceY
+            
+            if IsAlly(.target.unit, .unit) then
+                set .amountPerTick = TICK_PERIOD * GetHealPerSecond(.unit, .abilLv)
+            else
+                set .amountPerTick = TICK_PERIOD * GetDamagePerSecond(.unit, .abilLv)
+            endif
+            
+            set .soulAbsorbedPerTick = TICK_PERIOD * GetSoulAbsorbedPerSecond(.unit, .abilLv, IsAlly(.target.unit, .unit))
+            set .soulConsumed = CTL_PERIOD * GetSoulConsumedPerSecond(.unit, .abilLv, IsAlly(.target.unit, .unit))
+            set dist = SquareRoot(difX * difY + difY * difY)
+            set angle = Atan2(difY, difX)
+            
+            set i = LINK_FX_COUNT
+            loop
+                exitwhen i == 0
+                set i = i - 1
+                set linkAngle = angle + 0.25 * RAD + i * RAD / LINK_FX_COUNT
+                set linkX = sourceX + LINK_FX_RADIUS * Cos(linkAngle)
+                set linkY = sourceY + LINK_FX_RADIUS * Sin(linkAngle)
+                set linkFX = xefx.create(linkX, linkY, Atan2(targetY - linkY, targetX - linkX))
+                set linkFX.z = GetRandomReal(LINK_FX_RADIUS, 1.5 * LINK_FX_RADIUS)
+                set linkFX.fxpath = "Effects\\Mr.War3_XWO.mdx"
+                set linkFX.scale = 1.5
+                
+                if IsAlly(.target.unit, .unit) then
+                    set link = Link.create("DRAL", .target.unit, linkFX.dummy)
+                else
+                    set link = Link.create("DRAL", linkFX.dummy, .target.unit)
+                endif
+                
+                set link.sourceOffset = 0.
+                
+                set .linkList[2 * i] = linkFX
+                set .linkList[2 * i + 1] = link
+                
+                call linkFX.recolor(25, 255, 25, 255)
+            endloop
+            
+            call .target.lock()
+            
+            call Sound.createUnit(SoundType.create("Abilities\\Spells\\Human\\Slow\\SlowTarget.wav", 10, 10, 2.169),/*
+                                */ 100, .target.unit)
+        endmethod
+        
+        //! runtextmacro RegisterAbility_Default()
+    endstruct
+
+endlibrary

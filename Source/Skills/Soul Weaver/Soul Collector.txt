@@ -1,0 +1,173 @@
+library SoulCollector uses SpellMaker
+
+/* 설정 */
+    
+    private function GetMaxSoul takes unit caster, integer abilLv returns real
+        return 100.
+    endfunction
+
+    private function GetSoulRestoredPerSecond takes unit caster, integer abilLv returns real
+        return 10.00 + Status[caster].MPRegen / 50.
+    endfunction
+    
+    private function GetSoulAbsorbedOnKill takes unit caster, integer abilLv returns real
+        return 10.00
+    endfunction
+    
+    private function GetHPRestoredPerAbsorbedSoul takes unit caster, integer abilLv returns real
+        return (1.00 / 100.) * Status[caster].maxHP
+    endfunction
+    
+/* 설정 끝 */
+
+    globals
+        private constant real SOUL_PER_FX = 20.
+        
+        private constant real SPIRIT_SPINS_PER_SECOND = 0.50
+        private constant real SPIRIT_OFFSET_XY_MAX = 100.
+        private constant real SPIRIT_OFFSET_XY_MIN = 125.
+        private constant real SPIRIT_OFFSET_Z = 105.
+        private constant integer TWIST_COUNT = 3
+        
+        public constant integer ABIL_ID = 'A00B'
+    endglobals
+    
+    public struct Skill extends array
+        implement UnitIndexStructMethods
+        
+        private Table spiritData
+        readonly integer spiritCount
+        private real spiritAngleOffset
+        private real twistAngleOffset
+        
+        readonly integer abilLv
+        
+        method operator soul takes nothing returns real
+            return Status(this).RP
+        endmethod
+        method operator soul= takes real amount returns nothing
+            set Status(this).RP = amount
+        endmethod
+        
+        method operator maxSoul takes nothing returns real
+            return Status(this).maxRP
+        endmethod
+        
+        private method positionFX takes nothing returns nothing
+            local real sourceX = GetUnitX(.unit)
+            local real sourceY = GetUnitY(.unit)
+            local real sourceZ = GetUnitFlyHeight(.unit)
+            
+            local integer spiritIndex
+            local xefx spiritFX
+            local real spiritAngle
+            local real spiritDistance = SPIRIT_OFFSET_XY_MIN + (0.50 + 0.50 * Cos(.twistAngleOffset)) * (SPIRIT_OFFSET_XY_MAX - SPIRIT_OFFSET_XY_MIN)
+            
+            set spiritIndex = .spiritCount
+            loop
+                exitwhen spiritIndex == 0
+                set spiritIndex = spiritIndex - 1
+                set spiritFX = .spiritData[spiritIndex]
+                set spiritAngle = .spiritAngleOffset + spiritIndex * RAD / .spiritCount
+                set spiritFX.x = sourceX + spiritDistance * Cos(spiritAngle)
+                set spiritFX.y = sourceY + spiritDistance * Sin(spiritAngle)
+                set spiritFX.z = sourceZ + SPIRIT_OFFSET_Z
+                set spiritFX.angle = spiritAngle + bj_PI / 2.
+            endloop
+        endmethod
+        private method adjustFX takes nothing returns nothing
+            local real sourceX = GetUnitX(.unit)
+            local real sourceY = GetUnitY(.unit)
+            local real sourceZ = GetUnitFlyHeight(.unit)
+            
+            local integer maxSpiritCount = R2I(.maxSoul / SOUL_PER_FX)
+            local integer newSpiritCount = R2I(.soul / SOUL_PER_FX)
+            
+            local xefx spiritFX
+            
+            if newSpiritCount < 0 then
+                set newSpiritCount = 0
+            elseif newSpiritCount > maxSpiritCount then
+                set newSpiritCount = maxSpiritCount
+            endif
+            
+            if .spiritCount < newSpiritCount then
+                loop
+                    exitwhen .spiritCount == newSpiritCount
+                    set spiritFX = xefx.create(sourceX, sourceY, 0.)
+                    set spiritFX.z = sourceZ + SPIRIT_OFFSET_Z
+                    set spiritFX.fxpath = "Effects\\CurseBoltGreen.mdl"
+                    set .spiritData[.spiritCount] = spiritFX
+                    set .spiritCount = .spiritCount + 1
+                endloop
+            elseif .spiritCount > newSpiritCount then
+                loop
+                    exitwhen .spiritCount == newSpiritCount
+                    set .spiritCount = .spiritCount - 1
+                    call xefx(.spiritData[.spiritCount]).destroy()
+                endloop
+            endif
+        endmethod
+        
+        method absorbSoul takes real amount returns nothing
+            if amount <= 0. then
+                return
+            endif
+            
+            set .soul = .soul + amount
+            
+            call Heal.doEx(.unit, GetHPRestoredPerAbsorbedSoul(.unit, .abilLv) * amount)
+            call DestroyEffect(AddSpecialEffectTarget("Abilities\\Spells\\Undead\\DeathCoil\\DeathCoilSpecialArt.mdl", .unit, "origin"))
+        endmethod
+        
+        implement CTT
+        
+            local real angleIncrease
+        
+        implement CTTExpire
+        
+            if UnitAlive(.unit) then
+                set .soul = .soul + CTL_PERIOD * GetSoulRestoredPerSecond(.unit, .abilLv)
+                call .adjustFX()
+                
+                set angleIncrease = RAD * (CTL_PERIOD * SPIRIT_SPINS_PER_SECOND)
+                set .spiritAngleOffset = ModuloReal(.spiritAngleOffset + angleIncrease, 2. * bj_PI)
+                set .twistAngleOffset = ModuloReal(.twistAngleOffset + angleIncrease / (1. + 1. / TWIST_COUNT), 2. * bj_PI)
+                call .positionFX()
+            else
+                set .soul = 0.
+                call .adjustFX()
+            endif
+            
+        implement CTTEndA
+        
+        private static method onUnlearn takes nothing returns nothing
+            local thistype this = HeroSkill.learner
+            
+            set .soul = 0.
+            call .adjustFX()
+            call .destroy()
+        endmethod
+        
+        private static method onLearn takes nothing returns nothing
+            local thistype this = HeroSkill.learner
+            
+            if allocate(this) then
+                set .spiritData = Table.create()
+                set .spiritCount = 0
+                set .spiritAngleOffset = 0.
+                set .twistAngleOffset = 0.
+            endif
+            
+            set .abilLv = GetUnitAbilityLevel(.unit, ABIL_ID)
+            set Status(this).maxRP = R2I(GetMaxSoul(.unit, .abilLv))
+        endmethod
+        
+        private static method onInit takes nothing returns nothing
+            call RegisterSpellLearnEvent(ABIL_ID, function thistype.onLearn)
+            call RegisterSpellUnlearnEvent(ABIL_ID, function thistype.onUnlearn)
+            call PreloadAbility(ABIL_ID)
+        endmethod
+    endstruct
+    
+endlibrary

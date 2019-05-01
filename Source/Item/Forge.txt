@@ -1,0 +1,261 @@
+scope Forge initializer OnInit
+
+    globals
+        private constant integer GOLD_COST = 100
+    endglobals
+    
+	globals
+        private item array usableItems
+        private integer usableCount = 0
+        
+        private item array partItem
+    endglobals
+    
+    private function Prepare takes User user, RecipeList list returns nothing
+        local integer i
+        
+        loop
+            exitwhen usableCount == 0
+            set usableCount = usableCount - 1
+            set usableItems[usableCount] = null
+        endloop
+        
+        set i = UnitInventorySize(user.unit)
+        loop
+            exitwhen i == 0
+            set i = i - 1
+            set usableItems[usableCount] = UnitItemInSlot(user.unit, i)
+            
+            if usableItems[usableCount] != null then
+                if list != 0 then
+                    call list.add_related(GetItemTypeId(usableItems[usableCount]))
+                endif
+                
+                set usableCount = usableCount + 1
+            endif
+        endloop
+        
+        set i = user.bag.size
+        loop
+            exitwhen i == 0
+            set i = i - 1
+            set usableItems[usableCount] = user.bag[i]
+            
+            if usableItems[usableCount] != null then
+                if list != 0 then
+                    call list.add_related(GetItemTypeId(usableItems[usableCount]))
+                endif
+                
+                set usableCount = usableCount + 1
+            endif
+        endloop
+    endfunction
+    
+    private function IsReady takes Recipe recipe returns boolean
+        local integer item_id
+        local integer item_count
+        local integer i
+        
+        local integer total_count = recipe.totalCount
+        
+        local integer mat_count = recipe.count
+        loop
+            set mat_count = mat_count - 1
+            set item_id = recipe.getMatId(mat_count)
+            set item_count = recipe.getMatCount(mat_count)
+            set partItem[mat_count] = null
+            
+            set i = usableCount
+            loop
+                exitwhen i == 0
+                set i = i - 1
+                
+                if GetItemTypeId(usableItems[i]) == item_id and CheckCharges(usableItems[i], item_count) then
+                    set partItem[mat_count] = usableItems[i]
+                    set total_count = total_count - item_count
+                    
+                    exitwhen true
+                endif
+            endloop
+            
+            exitwhen partItem[mat_count] == null or mat_count == 0
+        endloop
+        
+        return total_count == 0
+    endfunction
+    
+    private function Process takes User user, Recipe recipe returns nothing
+        local integer mat_count
+        local item forged_item
+        local real x
+        local real y
+        
+        if IsReady(recipe) then
+            set mat_count = recipe.count
+            loop
+                set mat_count = mat_count - 1
+                
+                call ReduceCharges(partItem[mat_count], recipe.getMatCount(mat_count))
+                exitwhen mat_count == 0
+            endloop
+            
+            set x = GetUnitX(user.unit)
+            set y = GetUnitY(user.unit)
+            set forged_item = CreateItem(recipe.result, x, y)
+            
+            call SetItemUserData(forged_item, 1 + user)
+            call UnitAddItem(user.unit, forged_item)
+            
+            static if ENGLISH then
+                call TextTag_Dynamic.start(GetItemName(forged_item) + "|c00ffff80 was crafted!", x, y, GetUnitFlyHeight(user.unit) + 25, .0275, .02, bj_PI / 2, 3.5, 4)
+            else
+                call TextTag_Dynamic.start(GetItemName(forged_item) + "|c00ffff80이(가) 제련되었다!", x, y, GetUnitFlyHeight(user.unit) + 25, .0275, .02, bj_PI / 2, 3.5, 4)
+            endif
+            
+            call DestroyEffect(AddSpecialEffectTarget("Enchantment.mdl", user.unit, "origin"))
+            
+            set forged_item = null
+        endif
+    endfunction
+    
+    private struct ForgeDialog extends array
+        implement Alloc
+        
+        Dialog dg
+        RecipeList recipeList
+        User user
+        
+        method destroy takes nothing returns nothing
+            if .dg != 0 then
+                call .recipeList.destroy()
+                call .dg.destroy()
+                call .deallocate()
+                
+                set .dg = 0
+            endif
+        endmethod
+        
+        private static method onPress takes nothing returns boolean
+            local thistype this = Dialog.get().data
+            local integer pressed = .dg.getResult()
+            
+            if .dg != 0 and .user != -1 then
+                if pressed != HK_ESC then
+                    call Prepare(.user, 0)
+                    call Process(.user, .recipeList.get((pressed - 1) - HK_0))
+                else
+                    call SetPlayerState(user.player, PLAYER_STATE_RESOURCE_GOLD, GetPlayerState(user.player, PLAYER_STATE_RESOURCE_GOLD) + GOLD_COST)
+                endif
+            endif
+            
+            call .destroy()
+            return false
+        endmethod
+        
+        method show takes User showUser returns nothing
+            if .user == -1 then
+                set .user = showUser
+                
+                static if ENGLISH then
+                    call .dg.addButton("|c00c0c0c0[ESC]|r Cancel", HK_ESC, HK_ESC)
+                else
+                    call .dg.addButton("|c00c0c0c0[ESC]|r 취소", HK_ESC, HK_ESC)
+                endif
+                
+                call .dg.addAction(function thistype.onPress)
+                call .dg.show(.user.player)
+            endif
+        endmethod
+        
+        method addRecipe takes Recipe recipe returns nothing
+            local string displayText
+            
+            if .recipeList.count < 8 and .recipeList.add(recipe) then
+                set displayText = "|c00c0c0c0[" + I2S(.recipeList.count) + "]|r " + GetObjectName(recipe.result)
+                
+                if ItemInfo.has(recipe.result) then
+                    static if ENGLISH then
+                        set displayText = displayText + " |c00ffff80(Level req : " + I2S(ItemInfo[recipe.result].lvReq) + ")|r"
+                    else
+                        set displayText = displayText + " |c00ffff80(레벨제한 : " + I2S(ItemInfo[recipe.result].lvReq) + ")|r"
+                    endif
+                endif
+                
+                call .dg.addButton(displayText, HK_0 + .recipeList.count, HK_0 + .recipeList.count)
+            endif
+        endmethod
+        
+        static method create takes RecipeList list returns thistype
+            local thistype this = allocate()
+            local integer i
+            
+            set .dg = Dialog.create()
+            set .dg.data = this
+            set .recipeList = RecipeList.create()
+            set .user = -1
+            
+            if list != 0 then
+                set i = 0
+                
+                loop
+                    exitwhen i == list.count
+                    call .addRecipe(list.get(i))
+                    set i = i + 1
+                endloop
+            endif
+            
+            static if ENGLISH then
+                call .dg.setMessage("Select item to craft")
+            else
+                call .dg.setMessage("제작할 아이템을 선택하세요")
+            endif
+            
+            return this
+        endmethod
+    endstruct
+    
+    private function OnForge takes nothing returns boolean
+        local User user = Hero[GetTriggerUnit()].user
+        local RecipeList possible_list = RecipeList.create()
+        local RecipeList ready_list = RecipeList.create()
+        local integer i
+        
+        call Prepare(user, possible_list)
+        
+        set i = 0
+        loop
+            exitwhen i == possible_list.count
+            
+            if IsReady(possible_list.get(i)) then
+                call ready_list.add(possible_list.get(i))
+            endif
+            
+            set i = i + 1
+        endloop
+        
+        if ready_list.count >= 1 then
+            call ForgeDialog.create(ready_list).show(user)
+        /*elseif ready_list.count == 1 then
+            call Process(user, ready_list.get(0))*/
+        else
+            set user.gold = user.gold + GOLD_COST
+            
+            static if ENGLISH then
+                call NotifyPlayer(user.player, "Insufficient materials !")
+            else
+                call NotifyPlayer(user.player, "재료가 부족합니다 !")
+            endif
+            
+            call TimedEffect.onUnit("Abilities\\Spells\\Other\\Silence\\SilenceAreaBirth.mdl", user.unit, "origin", 1.25)
+        endif
+        
+        call possible_list.destroy()
+        call ready_list.destroy()
+        return false
+    endfunction
+    
+    private function OnInit takes nothing returns nothing
+        call RegisterItemPickUpEvent('I00L', function OnForge)
+	endfunction
+
+endscope

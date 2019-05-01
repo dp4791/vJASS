@@ -1,0 +1,150 @@
+scope RecipeDisplay initializer OnInit
+    
+    globals
+        private constant integer MAX_RECIPE_PER_PAGE = 7
+        
+        private integer array playerType
+        private integer array playerCount
+    endglobals
+    
+    private function DisplayRelatedRecipes takes player p, integer itemId returns nothing
+        local integer playerId = GetPlayerId(p)
+        local RecipeList recipeList
+        local Recipe recipe
+        local string print
+        local integer currentCount
+        local integer finalCount
+        local integer matSlot
+        local integer matId
+        
+        if Recipe.relatedLists.has(itemId) then
+            set recipeList = RecipeList.create()
+            
+            call recipeList.add_related(itemId)
+            
+            if GetLocalPlayer() == p then
+                call ClearTextMessages()
+            endif
+            
+            if recipeList.count > MAX_RECIPE_PER_PAGE then                
+                if playerType[playerId] == itemId then
+                    set playerCount[playerId] = playerCount[playerId] + 1
+                else
+                    set playerType[playerId] = itemId
+                    set playerCount[playerId] = 0
+                endif
+                
+                static if ENGLISH then
+                    call DisplayTimedTextToPlayer(p, 0, 0, 10, "|c00ffc0cbRelated Recipes (Page " + I2S(playerCount[playerId] + 1) + "):\n")
+                else
+                    call DisplayTimedTextToPlayer(p, 0, 0, 10, "|c00ffc0cb관련 조합법 목록 (Page " + I2S(playerCount[playerId] + 1) + "):\n")
+                endif
+            else
+                set playerCount[playerId] = 0
+                
+                static if ENGLISH then
+                    call DisplayTimedTextToPlayer(p, 0, 0, 10, "|c00ffc0cbRelated Recipes:\n")
+                else
+                    call DisplayTimedTextToPlayer(p, 0, 0, 10, "|c00ffc0cb관련 조합법 목록:\n")
+                endif
+            endif
+            
+            set currentCount = MAX_RECIPE_PER_PAGE * playerCount[playerId]
+            set finalCount = MAX_RECIPE_PER_PAGE * (playerCount[playerId] + 1)
+            
+            /* 마지막 레시피까지 표시가능한 경우, 초기화 시킨다 */
+            if finalCount >= recipeList.count then
+                set finalCount = recipeList.count
+                set playerType[playerId] = 0
+            endif
+            
+            loop
+                exitwhen currentCount == finalCount
+                set recipe = recipeList.get(currentCount)
+                
+                if recipe.result == itemId then
+                    set print = "|c00ffe066" + StripColorCode(GetObjectName(recipe.result)) + "|r: "
+                else
+                    set print = GetObjectName(recipe.result) + ": "
+                endif
+                
+                set matSlot = 0
+                loop
+                    set matId = recipe.getMatId(matSlot)
+                    
+                    if matId == itemId then
+                        set print = print + "|c00ffe066" + StripColorCode(GetObjectName(matId)) + "|r"
+                    else
+                        set print = print + GetObjectName(matId)
+                    endif
+                    
+                    if recipe.getMatCount(matSlot) > 1 then
+                        set print = print + " x" + I2S(recipe.getMatCount(matSlot))
+                    endif
+                    
+                    set matSlot = matSlot + 1
+                    exitwhen matSlot == recipe.count
+                    set print = print + " + "
+                endloop
+                
+                call DisplayTimedTextToPlayer(p, 0, 0, 10, print)
+                set currentCount = currentCount + 1
+            endloop
+            
+            if playerType[playerId] != 0 then
+                static if ENGLISH then
+                    call DisplayTimedTextToPlayer(p, 0, 0, 10, "\n|c00ffc0cbRun it again to see next page.|r")
+                else
+                    call DisplayTimedTextToPlayer(p, 0, 0, 10, "\n|c00ffc0cb다음 목록을 보려면 한 번 더 실행한다.|r")
+                endif
+            endif
+            
+            call recipeList.destroy()
+        endif
+    endfunction
+    
+    private function OnType takes nothing returns boolean
+        local string chatString = GetEventPlayerChatString()
+        local string matchedString = GetEventPlayerChatStringMatched()
+        local string itemName = SubString(chatString, StringLength(matchedString), StringLength(chatString))
+        local integer itemId
+        
+        if Recipe.isValidItemName(itemName) then
+            set itemId = Recipe.convertItemNameToId(itemName)
+            
+            call DisplayRelatedRecipes(GetTriggerPlayer(), itemId)
+        endif
+        
+        return false
+    endfunction
+    
+    private function OnItemUse takes nothing returns boolean
+        local item usedItem = GetManipulatedItem()
+        local integer itemId
+        
+        if GetItemType(usedItem) == ITEM_TYPE_CAMPAIGN then
+            set itemId = GetItemTypeId(usedItem)
+            
+            call DisplayRelatedRecipes(GetOwningPlayer(GetTriggerUnit()), itemId)
+        endif
+        
+        set usedItem = null
+        return false
+    endfunction
+    
+    private function OnInit takes nothing returns nothing
+        local ChatEvent chatEvent = ChatEvent.create(function OnType, false)
+        local integer i = MAX_PLAYERS
+        
+        loop
+            set i = i - 1
+            
+            call chatEvent.register_singular(i, "-조합법 ")
+            call chatEvent.register_singular(i, "-recipe ")
+            exitwhen i == 0
+        endloop
+        
+        call RegisterPlayerUnitEvent(EVENT_PLAYER_UNIT_USE_ITEM, function OnItemUse)
+	endfunction
+
+endscope

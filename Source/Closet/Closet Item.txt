@@ -1,0 +1,284 @@
+library ClosetItem uses Advent, Alloc, Dialog, Table, SystemFunctions, User
+
+    private module M
+        private static method onInit takes nothing returns nothing
+            set list = Table.create()
+        endmethod
+    endmodule
+    struct ClosetItemType extends array
+        implement M
+        implement SimpleAlloc
+        
+        ClosetSectionType sectionType
+        boolean requireHero
+        
+        readonly integer id
+        readonly string name
+        readonly string description
+        readonly string filterDescription
+        readonly Advent enabler
+        readonly Advent disabler
+        
+        private Table filterList
+        
+        private static Table list = 0
+        
+        static method operator [] takes integer itemId returns thistype
+            return list[itemId]
+        endmethod
+        static method has takes integer itemId returns boolean
+            return list.has(itemId)
+        endmethod
+        static method operator count takes nothing returns integer
+            return instanceCount
+        endmethod
+        
+        static method create takes integer itemId returns thistype
+            local thistype this = allocate()
+            
+            set .id = itemId
+            set .name = GetObjectName(itemId)
+            set .description = ""
+            set .filterDescription = ""
+            
+            set list[.id] = this
+            return this
+        endmethod
+        
+        method operator wrappedDescription takes nothing returns string
+            local string s = .name
+            
+            if .description != "" then
+                set s = s + "\n\n" + .description
+            endif
+            
+            if .filterDescription != "" then
+                set s = s + "\n\n|cffff2222(" + .filterDescription + ")|r"
+            endif
+            
+            return s
+        endmethod
+        
+        method addDescription takes string description returns nothing
+            set .description = description
+        endmethod
+        
+        method filterID takes string userName returns nothing
+            if .filterList != 0 then
+                set .filterList.boolean[NameHash(userName)] = true
+            endif
+        endmethod
+        method addFilter takes string filterDescription, boolean active returns nothing
+            set .filterDescription = filterDescription
+            
+            if active then
+                set .filterList = Table.create()
+                
+                debug call filterID("greenFruit")
+            endif
+        endmethod
+        
+        method isUsable takes string userName returns boolean
+            return (.filterList == 0 or .filterList.boolean.has(NameHash(userName)))
+        endmethod
+		
+        method registerEnabler takes code c returns nothing
+            if .enabler == 0 then
+                set .enabler = Advent.createSimple(c)
+            debug else
+                debug call BJDebugMsg("registerEnabler - double")
+            endif
+        endmethod
+		
+        method registerDisabler takes code c returns nothing
+            if .disabler == 0 then
+                set .disabler = Advent.createSimple(c)
+            debug else
+                debug call BJDebugMsg("registerDisabler - double")
+            endif
+        endmethod
+    endstruct
+	
+    struct ClosetItem extends array
+        implement LinkedList
+        
+        readonly boolean allocated
+        readonly User user
+        readonly delegate ClosetItemType type
+        
+        private boolean active_p
+        private boolean enabled
+        private boolean itemifiedOnce
+        private Dialog dialog
+        
+        method operator active takes nothing returns boolean
+            return .active_p
+        endmethod
+        
+        method fireEnabler takes nothing returns nothing
+            if not .enabled then
+                set .enabled = true
+                
+                if .enabler != 0 then
+                    call .enabler.fireValue(this)
+                endif
+                
+                if .sectionType.enabler != 0 then
+                    call .sectionType.enabler.fireValue(this)
+                endif
+            endif
+        endmethod
+        method operator active= takes boolean b returns nothing
+            if not .allocated then
+                return
+            endif
+            
+            if b then
+                if not .active_p then
+                    if not isUsable(user.name) then
+                        return
+                    endif
+                    
+                    set .active_p = true
+                    
+                    if .requireHero then
+                        if .user.hero != 0 then
+                            call .fireEnabler()
+                        endif
+                    else
+                        call .fireEnabler()
+                    endif
+                endif
+            else
+                if .active_p then
+                    set .active_p = false
+                    
+                    if .enabled then
+                        set .enabled = false
+                        
+                        if .disabler != 0 then
+                            call .disabler.fireValue(this)
+                        endif
+                        
+                        if .sectionType.disabler != 0 then
+                            call .sectionType.disabler.fireValue(this)
+                        endif
+                    endif
+                endif
+            endif
+        endmethod
+		
+        method destroy takes nothing returns nothing
+            if .allocated then
+                call .dialog.hide(.user.player)
+                
+                set .active = false
+				
+                call .dialog.destroy()
+                call .destroyNode()
+                
+                set .allocated = false
+                
+                debug call BJDebugMsg("ClosetItem destroyed - " + A2S(.id))
+            debug else
+                debug call BJDebugMsg("destroy - double free")
+            endif
+        endmethod
+        
+        private static method onClick takes nothing returns boolean
+            local Dialog dg = Dialog.get()
+            local thistype this = dg.data
+            local integer hotkey = dg.getResult()
+            local real x
+            local real y
+            
+            if hotkey == HK_1 then
+                set .active = not .active
+            elseif hotkey == HK_2 then
+                set .itemifiedOnce = true
+                set x = .user.bag.storage.x
+                set y = .user.bag.storage.y
+                
+                if GetLocalPlayer() == P[.user] then
+                    call PingMinimapEx(x, y, 5, 155, 155, 255, true)
+                endif
+                
+                static if ENGLISH then
+                    call .user.notify("A copy of the collectible has been created in your storage.")
+                else
+                    call .user.notify("창고에 치장 아이템의 원본이 1기 생성되었습니다.")
+                endif
+                
+                call SetItemUserData(CreateItem(id, x, y), 1 + user)
+                
+                static if DEBUG_MODE then
+                    call .destroy()
+                endif
+            endif
+            
+            return false
+        endmethod
+        
+        method display takes nothing returns nothing
+            call .dialog.clear()
+            call .dialog.setMessage(.wrappedDescription)
+            
+            if not .active then
+                static if ENGLISH then
+                    call .dialog.addButton("|c00c0c0c0[1]|r Enable", HK_1, HK_1)
+                else
+                    call .dialog.addButton("|c00c0c0c0[1]|r 활성화", HK_1, HK_1)
+                endif
+            else
+                static if ENGLISH then
+                    call .dialog.addButton("|c00c0c0c0[1]|r Disable", HK_1, HK_1)
+                else
+                    call .dialog.addButton("|c00c0c0c0[1]|r 비활성화", HK_1, HK_1)
+                endif
+            endif
+            
+            if not .itemifiedOnce then
+                static if ENGLISH then
+                    call .dialog.addButton("|c00c0c0c0[2]|r Itemify", HK_2, HK_2)
+                else
+                    call .dialog.addButton("|c00c0c0c0[2]|r 아이템화", HK_2, HK_2)
+                endif
+            endif
+            
+            static if ENGLISH then
+                call .dialog.addButton("|c00c0c0c0[ESC]|r Cancel", HK_ESC, 0)
+            else
+                call .dialog.addButton("|c00c0c0c0[ESC]|r 취소", HK_ESC, 0)
+            endif
+            
+            call .dialog.addAction(function thistype.onClick)
+            call .dialog.show(.user.player)
+        endmethod
+        
+        static method create takes integer itemId, User user returns thistype
+            local ClosetItemType itemType = ClosetItemType[itemId]
+            local thistype this
+            
+            if itemType == 0 then
+                debug call BJDebugMsg("create - itemId is not registered as ClosetItemType")
+                return 0
+            endif
+            
+            set this = createNode()
+            
+            set .allocated = true
+            set .user = user
+            set .type = itemType
+            
+            set .active_p = false
+            set .enabled = false
+            set .itemifiedOnce = false
+            set .dialog = Dialog.create()
+            set .dialog.data = this
+            
+            debug call BJDebugMsg("ClosetItem created - " + A2S(itemId))
+            return this
+        endmethod
+    endstruct
+    
+endlibrary

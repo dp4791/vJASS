@@ -1,0 +1,304 @@
+library Event uses Alloc, CondList, ErrorMessage, optional Debugger
+/*	
+	Idea from https://www.thehelper.net/threads/advent.151634/
+*/
+	
+    struct Event extends array
+        implement Alloc
+        
+        integer data
+        readonly integer priority
+        readonly boolean active
+        private boolean ex
+        
+        private thistype head
+        private thistype prev
+        private thistype next
+        private trigger trg
+        private CondList condList
+        private integer lock_p
+        
+        readonly static thistype reg = 0
+        
+        private method lock takes nothing returns nothing
+            set .lock_p = .lock_p + 1
+            
+            call ThrowWarning(.trg == null, "Event", "lock", "Event", this, "tried to lock invalid event")
+        endmethod
+        private method unlock takes nothing returns nothing
+            call ThrowWarning(.lock_p <= 0, "Event", "unlock", "Event", this, "tried to unlock invalid event")
+            
+            set .lock_p = .lock_p - 1
+            
+            if .lock_p == 0 then
+                if .head != 0 then
+                    set .prev.next = .next
+                    set .next.prev = .prev
+                    set .head = 0
+                endif
+                
+                static if LIBRARY_Debugger then
+                    call Debugger[DEBUGGER_ADVENT].mod(-1)
+                endif
+                
+                call .condList.destroy()
+                call DestroyTrigger(.trg)
+                call .deallocate()
+                
+                set .trg = null
+            endif
+        endmethod
+        
+        /* 이벤트를 파괴합니다. */
+        method destroy takes nothing returns nothing
+            local thistype node
+            local thistype tempNode
+            
+            if .active then
+                set .active = false
+                
+                if .head == this then
+                    set node = .next
+                    
+                    loop
+                        exitwhen node == this
+                        
+                        call node.lock()
+                        
+                        if node.ex then
+                            set node.head = 0
+                        else
+                            call node.destroy()
+                        endif
+                        
+                        set tempNode = node.next
+                        call node.unlock()
+                        set node = tempNode
+                    endloop
+                endif
+                
+                call .unlock()
+            endif
+        endmethod
+        
+        /* 이벤트를 실행합니다. 리스트일 경우 등록된 이벤트 (레지스트리)들 역시 실행됩니다. */
+        method fire takes nothing returns nothing
+            local integer pReg = reg
+            local thistype tempNode
+            
+            if .active then
+                call .lock()
+                
+                if .head == this then
+                    set reg = .next
+                    loop
+                        exitwhen reg == this
+                        call reg.lock()
+                        call reg.fire()
+                        set tempNode = reg.next
+                        call reg.unlock()
+                        set reg = tempNode
+                    endloop
+                else
+                    set reg = this
+                endif
+                
+                call TriggerEvaluate(.trg)
+                call .unlock()
+            endif
+            
+            set reg = pReg
+        endmethod
+        
+        readonly static integer value = 0
+        
+        /* 이벤트를 실행합니다. 리스트일 경우 등록된 이벤트 (레지스트리)들 역시 실행됩니다. 
+           또한 값을 하나 전달해, 실행되는 함수 내에서 Event.value를 통해 받아올수 있습니다. */
+        method fireValue takes integer newValue returns nothing
+            local integer pValue
+            
+            if .active then
+                set pValue = value
+                set value = newValue
+                
+                call fire()
+                
+                set value = pValue
+            endif
+        endmethod
+        
+        /* 이벤트에 c의 코드를 등록해, 이벤트가 실행될시 c가 실행되게 합니다. */
+        method register takes code c returns nothing
+            if .active then
+                call .condList.add(.trg, c)
+            endif
+        endmethod
+        
+        /* 이벤트를 생성후 반환합니다. */
+        static method create takes nothing returns thistype
+            local thistype this = allocate()
+            
+            set .active = true
+            set .trg = CreateTrigger()
+            set .condList = CondList.create()
+            set .head = 0
+            
+            static if LIBRARY_Debugger then
+                call Debugger[DEBUGGER_ADVENT].mod(1)
+            endif
+            
+            call .lock()
+            return this
+        endmethod
+        
+        /* 이벤트를 생성, 조건 c를 등록후 반환합니다. */
+        static method createSimple takes code c returns thistype
+            local thistype this = create()
+            
+            call .register(c)
+            return this
+        endmethod
+        
+        /* 리스트에 c의 코드와, priority의 우선도를 가진 이벤트를 등록후 (레지스트리) 해당 이벤트를 반환합니다 */
+        private method add_p takes code c, integer priority returns thistype
+            local thistype node = 0
+            local thistype rightSpot
+            
+            if .active and .head == this then
+                set node = createSimple(c)
+                set node.head = this
+                set node.priority = priority
+                set node.ex = false
+                
+                set rightSpot = .next
+                loop
+                    exitwhen rightSpot == this or node.priority > rightSpot.priority
+                    set rightSpot = rightSpot.next
+                endloop
+                
+                set rightSpot.prev.next = node
+                set node.prev = rightSpot.prev
+                set rightSpot.prev = node
+                set node.next = rightSpot
+            endif
+            
+            return node
+        endmethod
+        
+        /* 리스트에 c의 코드와, priority의 우선도를 가진 이벤트를 등록합니다 (레지스트리)
+           해당 이벤트는 리스트가 파괴될때 자동으로 파괴됩니다. */
+        method add takes code c, integer priority returns nothing
+            local thistype node = .add_p(c, priority)
+            
+            call ThrowWarning(node == 0, "Event", "add", "Event", node, "tried to add onto invalid event list [" + I2S(this) + "]")
+        endmethod
+        
+        /* 리스트에 c의 코드와, priority의 우선도를 가진 이벤트를 등록후 (레지스트리) 해당 이벤트를 반환합니다.
+           해당 이벤트는 수동으로 파괴해주어야합니다. */
+        method addEx takes code c, integer priority returns thistype
+            local thistype node = .add_p(c, priority)
+            
+            set node.ex = true
+            
+            call ThrowWarning(node == 0, "Event", "addEx", "Event", node, "tried to add onto invalid event list [" + I2S(this) + "]")
+            return node
+        endmethod
+        
+        /* 이벤트 리스트를 생성후 반환합니다. */
+        static method createList takes nothing returns thistype
+            local thistype this = create()
+            
+            set .head = this
+            set .prev = this
+            set .next = this
+            return this
+        endmethod
+    endstruct
+    
+    //! textmacro RegisterEvent takes NAME
+        readonly Event on$NAME$
+        
+        method register$NAME$Event takes code c, integer priority returns nothing
+            debug call ThrowWarning(this == 0, SCOPE_PREFIX, "register$NAME$Event", null, this, "tried to register event onto invalid index")
+            
+            if .on$NAME$ == 0 then
+                set .on$NAME$ = Event.createList()
+            endif
+            
+            if priority == 0 then
+                call .on$NAME$.register(c)
+            else
+                call .on$NAME$.add(c, priority)
+            endif
+        endmethod
+        method register$NAME$EventEx takes code c, integer priority returns Event
+            debug call ThrowWarning(this == 0, SCOPE_PREFIX, "register$NAME$EventEx", null, this, "tried to register event onto invalid index")
+            
+            if .on$NAME$ == 0 then
+                set .on$NAME$ = Event.createList()
+            endif
+            
+            return .on$NAME$.addEx(c, priority)
+        endmethod
+    //! endtextmacro
+    
+    //! textmacro RegisterUnitEvent takes NAME
+        readonly Event on$NAME$
+        
+        method register$NAME$ takes code c, integer priority returns nothing
+            debug call ThrowWarning(this == 0, "Event", "register$NAME$", null, this, "tried to register event onto invalid index")
+            
+            if .on$NAME$ == 0 then
+                if .unit == null then
+                    return
+                endif
+                
+                set .on$NAME$ = Event.createList()
+            endif
+            
+            if priority == 0 then
+                call .on$NAME$.register(c)
+            else
+                call .on$NAME$.add(c, priority)
+            endif
+        endmethod
+        method register$NAME$Ex takes code c, integer priority returns Event
+            debug call ThrowWarning(this == 0, "Event", "register$NAME$", null, this, "tried to register event onto invalid index")
+            
+            if .on$NAME$ == 0 then
+                if .unit == null then
+                    return 0
+                endif
+                
+                set .on$NAME$ = Event.createList()
+            endif
+            
+            return .on$NAME$.addEx(c, priority)
+        endmethod
+    //! endtextmacro
+    
+    //! textmacro RegisterStaticEvent takes NAME
+        readonly static Event on$NAME$ = 0
+        
+        static method register$NAME$ takes code c, integer priority returns nothing
+            if on$NAME$ == 0 then
+                set on$NAME$ = Event.createList()
+            endif
+            
+            if priority == 0 then
+                call on$NAME$.register(c)
+            else
+                call on$NAME$.add(c, priority)
+            endif
+        endmethod
+    //! endtextmacro
+    
+    //! textmacro DestroyEvent takes NAME
+        if .on$NAME$ != 0 then
+            call .on$NAME$.destroy()
+            
+            set .on$NAME$ = 0
+        endif
+    //! endtextmacro
+    
+endlibrary

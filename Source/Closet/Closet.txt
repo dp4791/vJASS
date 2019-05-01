@@ -1,0 +1,198 @@
+library Closet uses ClosetSection, ClosetItem
+    
+    struct Closet extends array
+        
+        private Table sections
+        private Dialog dialog
+		
+        static method operator [] takes player p returns thistype
+            return GetPlayerId(p)
+        endmethod
+        
+        method getSection takes ClosetSectionType sectionType returns ClosetSection
+            if .sections.has(sectionType) then
+                return .sections[sectionType]
+            endif
+			
+            return 0
+        endmethod
+        
+        method operator itemCount takes nothing returns integer
+            local integer count = 0
+            local ClosetSectionType sectionType
+            local ClosetSection section
+            
+            if .sections != 0 then
+                set sectionType = 0
+                loop
+                    exitwhen sectionType == ClosetSectionType.max
+                    set sectionType = sectionType + 1
+                    set section = .getSection(sectionType)
+                    
+                    if section != 0 then
+                        set count = count + section.head.nodeCount
+                    endif
+                endloop
+            endif
+            
+            return count
+        endmethod
+		
+        private method clearDialog takes nothing returns nothing
+            if .dialog != 0 then
+                call .dialog.hide(P[this])
+                call .dialog.destroy()
+            
+                set .dialog = 0
+            endif
+        endmethod
+        private static method onClick takes nothing returns boolean
+            local Dialog dg = Dialog.get()
+            local thistype this = dg.data
+            local ClosetSection section = dg.getResult()
+			
+            if section != 0 then
+                call section.display()
+            endif
+            
+            call .clearDialog()
+            return false
+        endmethod
+		
+        method addItemById takes integer itemId returns ClosetItem
+            local ClosetItemType itemType = ClosetItemType[itemId]
+            local ClosetSectionType sectionType
+            
+            local ClosetItem i
+			
+            if .sections == 0 or itemType == 0 then
+                return 0
+            endif
+			
+            set sectionType = itemType.sectionType
+            if sectionType == 0 then
+                return 0
+            endif
+			
+            set i = ClosetItem.create(itemId, this)
+			
+            if not .sections.has(sectionType) then
+                set .sections[sectionType] = ClosetSection.create(sectionType, this)
+            endif
+			
+            if not ClosetSection(.sections[sectionType]).addItem(i) then
+                call i.destroy()
+                return 0
+            endif
+			
+            return i
+        endmethod
+        
+        method display takes nothing returns nothing
+            local integer hotkeyNumber = 1
+            local integer hotkey = HK_1
+            
+            local ClosetSectionType sectionType
+            local ClosetSection section
+            
+            call .clearDialog()
+            
+            set .dialog = Dialog.create()
+            set .dialog.data = this
+			
+            static if ENGLISH then
+                call .dialog.setMessage("Closet (" + I2S(.itemCount) + "/" + I2S(ClosetItemType.count) + ")")
+            else
+                call .dialog.setMessage("옷장 (" + I2S(.itemCount) + "/" + I2S(ClosetItemType.count) + ")")
+			endif
+            
+            set sectionType = 0
+            loop
+                exitwhen sectionType == ClosetSectionType.max
+                set sectionType = sectionType + 1
+                set section = .getSection(sectionType)
+				
+                if section != 0 then
+                    call .dialog.addButton("|c00c0c0c0[" + I2S(hotkeyNumber) + "]|r " + section.name, hotkey, section)
+					
+                    set hotkeyNumber = hotkeyNumber + 1
+                    set hotkey = hotkey + 1
+                    exitwhen hotkey == HK_9
+                endif
+            endloop
+			
+            static if ENGLISH then
+                call .dialog.addButton("|c00c0c0c0[ESC]|r Cancel", HK_ESC, 0)
+            else
+                call .dialog.addButton("|c00c0c0c0[ESC]|r 취소", HK_ESC, 0)
+            endif
+            
+            call .dialog.addAction(function thistype.onClick)
+            call .dialog.show(P[this])
+        endmethod
+		
+        method register takes nothing returns nothing
+            if .sections == 0 then
+                set .sections = Table.create()
+            endif
+        endmethod
+        
+        method checkApplication takes nothing returns nothing
+            local ClosetSectionType sectionType
+            local ClosetSection section
+            local ClosetItem i
+            
+            if .sections != 0 then
+                set sectionType = 0
+                loop
+                    exitwhen sectionType == ClosetSectionType.max
+                    set sectionType = sectionType + 1
+                    set section = .getSection(sectionType)
+                    
+                    if section != 0 then
+                        set i = section.head.next
+                        loop
+                            exitwhen i == section.head
+                            
+                            if i.active then
+                                call i.fireEnabler()
+                            endif
+                            
+                            set i = i.next
+                        endloop
+                    endif
+                endloop
+            endif
+        endmethod
+        
+        method clear takes nothing returns nothing
+            local ClosetSectionType sectionType
+            local ClosetSection section
+            
+            if .sections != 0 then
+                set sectionType = 0
+                loop
+                    exitwhen sectionType == ClosetSectionType.max
+                    set sectionType = sectionType + 1
+                    set section = .getSection(sectionType)
+                    
+                    if section != 0 then
+                        call section.destroy()
+                        call .sections.remove(sectionType)
+                    endif
+                endloop
+            endif
+        endmethod
+		
+        method unregister takes nothing returns nothing
+            if .sections != 0 then
+                call .clear()
+                call .clearDialog()
+                call .sections.destroy()
+				
+                set .sections = 0
+            endif
+        endmethod
+    endstruct
+	
+endlibrary

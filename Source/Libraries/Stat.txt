@@ -1,0 +1,250 @@
+library Stat uses Advent, ErrorMessage, UnitIndexer
+    
+    struct Stat extends array
+        
+        /* for head node */
+        readonly UnitIndex ref
+        readonly Advent event
+        
+        private boolean additive
+        private real multiplier
+        
+        /* common */
+        readonly real baseValue
+        readonly real value
+        
+        private thistype prev
+        private thistype next
+        private thistype head
+        private boolean allocated
+        
+        private static integer index = 0
+        
+        method operator isEmpty takes nothing returns boolean
+            return .next == this
+        endmethod
+        
+        private method calculate takes nothing returns nothing
+            local thistype node = .next
+            
+            set .value = .baseValue
+            loop
+                exitwhen node == this
+                
+                if .additive then
+                    set .value = .value + .multiplier * node.baseValue
+                else
+                    set .value = .value * (1. + .multiplier * node.baseValue)
+                endif
+                
+                set node = node.next
+            endloop
+            
+            if not .additive then
+                set .value = .multiplier * (.value - 1.)
+            endif
+            
+            if .event != 0 then
+                call .event.fireValue(.ref)
+            endif
+            
+            debug call ThrowWarning(.head != this, "Stat", "calculate", "Stat", this, "tried to calculate value of non-head node")
+        endmethod
+        
+        method operator percent takes nothing returns real
+            return 100. * .value
+        endmethod
+        method operator percent= takes real perc returns nothing
+            if perc != .percent then
+                set .value = .01 * perc
+                set .baseValue = .value
+                
+                if .head != 0 then
+                    call .head.calculate()
+                    
+                    debug if not .additive then
+                        debug call ThrowWarning(.head.multiplier * .baseValue < -1., "Stat", "percent=", "Stat", this, /*
+                                             */ "tried set percent above/below 100; (reference: " + GetUnitName(.head.ref.unit) + ")")
+                    debug endif
+                endif
+            endif
+        endmethod
+        
+        method destroy takes nothing returns nothing
+            local thistype node
+            
+            if .allocated then
+                set .allocated = false
+                
+                if .head == this then
+                    set node = .next
+                    
+                    loop
+                        set node.head = 0
+                        exitwhen node == this
+                        set node = node.next
+                    endloop
+                elseif .head != 0 then
+                    set .prev.next = .next
+                    set .next.prev = .prev
+                    
+                    call .head.calculate()
+                endif
+                
+                set .prev = thistype(0).prev
+                set thistype(0).prev = this
+            endif
+        endmethod
+        
+        private static method allocate takes nothing returns thistype            
+            local thistype this = thistype(0).prev
+            
+            if this == 0 then
+                set index = index + 1
+                set this = index
+            else
+                set thistype(0).prev = .prev
+            endif
+            
+            set .allocated = true
+            return this
+        endmethod
+        
+        static method createEx takes UnitIndex ref, Event ev, boolean additive, boolean diminish returns thistype
+            local thistype this = allocate()
+            
+            set .prev = this
+            set .next = this
+            
+            set .ref = ref
+            set .event = ev
+            
+            set .head = this
+            
+            if additive then
+                set .additive = true
+                set .baseValue = 0.
+                set .value = 0.
+                
+                if .event != 0 then
+                    call .event.fireValue(.ref)
+                endif
+            else
+                set .additive = false
+                set .baseValue = 1.
+                
+                call .calculate()
+            endif
+            
+            if diminish then
+                set .multiplier = -1.
+            else
+                set .multiplier = 1.
+            endif
+            
+            return this
+        endmethod
+        static method create takes boolean additive, boolean diminish returns thistype
+            return createEx(0, 0, additive, diminish)
+        endmethod
+        
+        method mod takes real perc returns nothing
+            if .additive then
+                set .baseValue = .baseValue + .multiplier * (0.01 * perc)
+                set .value = .value + .multiplier * (0.01 * perc)
+                
+                if .event != 0 then
+                    call .event.fireValue(.ref)
+                endif
+            else
+                set .baseValue = .baseValue * (1. + .multiplier * (0.01 * perc))
+                
+                call .calculate()
+            endif
+            
+            debug call ThrowWarning(.head != this, "Stat", "mod", "Stat", this, "tried to mod non-head node")
+        endmethod
+        
+        method createMod takes real perc returns thistype
+            local thistype node
+            
+            set node = allocate()
+            set node.prev = .prev
+            set .prev.next = node
+            set .prev = node
+            set node.next = this
+            
+            set node.head = this
+            set node.value = 0.
+            set node.percent = perc
+            
+            debug call ThrowWarning(.head != this, "Stat", "createMod", "Stat", this, "tried to create a mod from non-head node")
+            return node
+        endmethod
+    endstruct
+    
+    //! textmacro RegisterStat takes NAME, SMALL_NAME, EV_NAME, ADDITIVE, DIMINISH
+        private Stat $SMALL_NAME$_p
+        
+        method operator $SMALL_NAME$ takes nothing returns real
+            if .$SMALL_NAME$_p == 0 then
+                return 0.
+            endif
+            
+            return .$SMALL_NAME$_p.value
+        endmethod
+        method operator $SMALL_NAME$= takes real perc returns nothing
+            if .$SMALL_NAME$_p == 0 then
+                if .unit == null then
+                    return
+                endif
+                
+                set .$SMALL_NAME$_p = Stat.createEx(this, $EV_NAME$, $ADDITIVE$, $DIMINISH$)
+            endif
+            
+            set .$SMALL_NAME$_p.percent = perc
+        endmethod
+        method mod$NAME$ takes real perc returns nothing
+            if .$SMALL_NAME$_p == 0 then
+                if .unit == null then
+                    return
+                endif
+                
+                set .$SMALL_NAME$_p = Stat.createEx(this, $EV_NAME$, $ADDITIVE$, $DIMINISH$)
+            endif
+            
+            call .$SMALL_NAME$_p.mod(perc)
+        endmethod
+        method mod$NAME$Ex takes real perc returns Stat
+            if .$SMALL_NAME$_p == 0 then
+                if .unit == null then
+                    return 0
+                endif
+                
+                set .$SMALL_NAME$_p = Stat.createEx(this, $EV_NAME$, $ADDITIVE$, $DIMINISH$)
+            endif
+            
+            return .$SMALL_NAME$_p.createMod(perc)
+        endmethod
+        method mod$NAME$Shared takes integer slot, boolean positive, real perc returns SharedStat
+            if .$SMALL_NAME$_p == 0 then
+                if .unit == null then
+                    return 0
+                endif
+                
+                set .$SMALL_NAME$_p = Stat.createEx(this, $EV_NAME$, $ADDITIVE$, $DIMINISH$)
+            endif
+            
+            return SharedStat.generate(this, .$SMALL_NAME$_p, positive, slot, perc)
+        endmethod
+    //! endtextmacro
+    
+    //! textmacro DestroyStat takes NAME, SMALL_NAME
+        if .$SMALL_NAME$_p != 0 then
+            call .$SMALL_NAME$_p.destroy()
+            
+            set .$SMALL_NAME$_p = 0
+        endif
+    //! endtextmacro
+    
+endlibrary

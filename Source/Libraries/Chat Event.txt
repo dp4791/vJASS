@@ -1,0 +1,110 @@
+library ChatEvent uses Alloc, SystemFunctions
+
+    globals
+        constant integer CHAT_ARGUMENT_MAX_COUNT = 5
+    endglobals
+    
+    struct ChatArgument extends array
+    
+        private static string array list
+        
+        static method operator [] takes integer argIndex returns string
+            local string chatString = GetEventPlayerChatString()
+            local integer length = StringLength(chatString)
+            local integer startIndex
+            local integer endIndex
+            local integer bracketDepth
+            local integer spaceCount
+            local string char
+            
+            if argIndex < CHAT_ARGUMENT_MAX_COUNT and list[argIndex] == "" then
+                set startIndex = 0
+                set endIndex = 0
+                set bracketDepth = 0
+                set spaceCount = argIndex
+                
+                loop
+                    exitwhen endIndex >= length
+                    set char = SubString(chatString, endIndex, endIndex + 1)
+                    
+                    if bracketDepth == 0 and char == " " then
+                        if spaceCount == 0 then
+                            exitwhen true
+                        else
+                            set spaceCount = spaceCount - 1
+                            set startIndex = endIndex + 1
+                        endif
+                    elseif char == "{" then
+                        set bracketDepth = bracketDepth + 1
+                    elseif char == "}" then 
+                        set bracketDepth = bracketDepth - 1
+                    endif
+                    
+                    set endIndex = endIndex + 1
+                endloop
+                
+                if spaceCount == 0 then
+                    if SubString(chatString, startIndex, startIndex + 1) == "{" then
+                        set startIndex = startIndex + 1
+                    endif
+                    
+                    if SubString(chatString, endIndex - 1, endIndex) == "}" then
+                        set endIndex = endIndex - 1
+                    endif
+                    
+                    set list[argIndex] = SubString(chatString, startIndex, endIndex)
+                endif
+            endif
+            
+            return list[argIndex]
+        endmethod
+        static method reset takes nothing returns nothing
+            local integer i = 0
+            
+            loop
+                set list[i] = ""
+                set i = i + 1
+                exitwhen i == CHAT_ARGUMENT_MAX_COUNT
+            endloop
+        endmethod
+    endstruct
+    
+    struct ChatEvent extends array
+        implement Alloc
+        
+        private trigger trg
+        readonly boolean exact
+        
+        method register_singular takes integer player_id, string s returns nothing
+            call TriggerRegisterPlayerChatEvent(.trg, P[player_id], s, .exact)
+        endmethod
+        
+        method register takes string s returns nothing
+            local integer player_id = MAX_PLAYERS
+            
+            loop
+                set player_id = player_id - 1
+                call .register_singular(player_id, s)
+                exitwhen player_id == 0
+            endloop
+        endmethod
+        
+        static method create takes code c, boolean exact returns thistype
+            local thistype this = allocate()
+            
+            set .trg = CreateTrigger()
+            set .exact = exact
+            
+            call TriggerAddCondition(.trg, Filter(c))
+            return this
+        endmethod
+        
+        static method createSimple takes string s, code c, boolean exact returns thistype
+            local thistype this = create(c, exact)
+            
+            call .register(s)
+            return this
+        endmethod
+    endstruct
+    
+endlibrary

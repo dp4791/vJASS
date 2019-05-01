@@ -1,0 +1,186 @@
+library ChannelEffect /* v1.0.0.0
+*************************************************************************************
+*
+*    채널링 효과를 손쉽게 추가해줍니다.
+*
+*************************************************************************************
+*
+*   */uses/*
+*
+*       */ Effect /*
+*       */ CTL /*
+*       */ UnitIndexer /*
+*       */ SystemFunctions /*
+*       */ Sound /*
+*
+*************************************************************************************
+*
+*   struct ChannelEffect extends array
+*
+*       Methods
+*       ------------------
+*       static method operator [] takes unit u returns thistype
+*       - 채널 효과를 생성합니다.
+*         유닛이 시전을 멈추면 자동으로 파괴됩니다.
+*
+*       method add takes string s, string attachment returns thistype
+*       - 타겟 효과를 현재 시전자에게 추가합니다.
+*
+*************************************************************************************/
+
+    struct ChannelEffect extends array
+    
+        readonly UnitIndex target
+        readonly Effect effect
+        readonly Sound sound
+        readonly string periodicEffect
+        readonly string attachEffect
+        readonly string newAnim
+        readonly integer order
+        readonly integer cycle
+        readonly integer newCycle
+        readonly integer removedAbility
+        
+        private timer callbackTimer
+        
+        method onRemove takes nothing returns nothing
+            set .order = 0
+            
+            if .removedAbility != 0 then
+                call AddAbility(.unit, .removedAbility)
+                    
+                set .removedAbility = 0
+            endif
+            
+            if .sound != 0 then
+                call .sound.destroy()
+                
+                set .sound = 0
+            endif
+            
+            if .target != 0 then
+                call .target.unlock()
+                
+                set .target = 0
+            endif
+            
+            if .callbackTimer != null then
+                call ReleaseTimer(.callbackTimer)
+                
+                set .callbackTimer = null
+            endif
+            
+            call SetUnitTimeScale(.unit, 1)
+            call .effect.destroy()
+        endmethod
+        
+        implement CTTExpire
+                
+            if GetUnitCurrentOrder(.unit) == .order then
+                if .newAnim != "" then
+                    call SetUnitAnimation(.unit, .newAnim)
+                    
+                    set .newAnim = ""
+                endif
+                
+                if .target != 0 and UnitAlive(.target.unit) then
+                    call SetUnitFacingTimed(.unit, bj_RADTODEG * GetAngle(.unit, .target.unit), 0)
+                endif
+                
+                if .periodicEffect != "" then
+                    set .cycle = .cycle - 1
+                    
+                    if .cycle <= 0 then
+                        set .cycle = .newCycle
+                        
+                        call DestroyEffect(AddSpecialEffectTarget(.periodicEffect, .unit, .attachEffect))
+                    endif
+                endif
+            else
+                call .destroy()
+            endif
+        
+        implement CTTEndA
+        
+        method add takes string s, string a returns thistype
+            call .effect.addTarget(s, .unit, a)
+            return this
+        endmethod
+        
+        method addEx takes string s, unit t, string a returns thistype
+            call .effect.addTarget(s, t, a)
+            return this
+        endmethod
+        
+        method addSound takes SoundType soundType, integer volume returns thistype
+            if .sound == 0 then
+                set .sound = Sound.createUnit(soundType, volume, .unit)
+            endif
+            
+            return this
+        endmethod
+        
+        method addCallback takes code c, real period returns thistype
+            if .callbackTimer == null then
+                set .callbackTimer = NewTimerEx(this)
+            endif
+            
+            call TimerStart(.callbackTimer, period, true, c)
+            return this
+        endmethod
+        
+        method setAnimation takes string s returns thistype
+            set .newAnim = s
+            
+            return this
+        endmethod
+        
+        method setTimeScale takes real v returns thistype
+            call SetUnitTimeScale(.unit, v)
+            
+            return this
+        endmethod
+         
+        method setTarget takes unit u returns thistype
+            if .target != 0 then
+                call .target.unlock()
+            endif
+            
+            set .target = GetUnitId(u)
+            
+            call .target.lock()
+            return this
+        endmethod
+        
+        method addPeriodic takes string s, string a, real cy returns thistype
+            set .periodicEffect = s
+            set .attachEffect = a
+            set .newCycle = R2I(cy / .03125)
+            set .cycle = .newCycle
+            
+            return this
+        endmethod
+        
+        method removeAbility takes integer abilId returns thistype
+            set .removedAbility = abilId
+            
+            call RemoveAbility(.unit, abilId)
+            return this
+        endmethod
+        
+        static method operator [] takes unit u returns thistype
+            local thistype this = GetUnitId(u)
+            
+            if allocate(this) then
+                set .effect = Effect.create()
+            endif
+            
+            set .order = GetUnitCurrentOrder(u)
+            set .periodicEffect = ""
+            set .attachEffect = ""
+            
+            return this
+        endmethod
+    endstruct
+    
+endlibrary

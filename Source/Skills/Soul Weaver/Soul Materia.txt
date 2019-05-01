@@ -1,0 +1,117 @@
+scope SoulMateria initializer OnInit
+
+/* 설정 끝 */
+
+    private function GetEffectRadius takes unit caster, integer abilLv returns real
+        return 500.
+    endfunction
+
+    private function GetBuffSpellDealtBonus takes unit caster, integer abilLv returns real
+        return 7.00 + 1.00 * abilLv
+    endfunction
+    private function GetHPRegenBonus takes unit caster, unit target, integer abilLv returns real
+        return 0.03 * Status[target].maxHP
+    endfunction
+    
+    private function GetBuffDuration takes unit caster, integer abilLv returns real
+        return 15.
+    endfunction
+    
+/* 설정 끝 */
+    
+    private function GetBuffFXPath takes unit caster returns string
+        if Hero[caster].baseId == 'H03M' then
+            return "Effects\\SoulArmor_White.mdl"
+        endif
+        
+        return "Effects\\SoulArmor.mdl"
+    endfunction
+
+    globals
+        private constant integer BUFF_ABIL_ID = 'A00T'
+        private constant integer BUFF_BUFF_ID = 'B001'
+        
+        public constant integer ABIL_ID = 'A010'
+    endglobals
+    
+    private struct SDBuff extends array
+        
+        private Stat sdMod
+        private Effect fx
+        private real hpRegen
+        
+        readonly static BuffType buffType = 0
+        
+        private static method onRemove takes nothing returns nothing
+            local Buff bf = Advent.value
+            local thistype this = bf.targetId
+            
+            call Status(this).modHPRegen(-.hpRegen)
+            call .sdMod.destroy()
+            call .fx.destroy()
+        endmethod
+        private static method onStack takes nothing returns nothing
+            local Buff bf = Advent.value
+            local thistype this = bf.targetId
+            local real hpRegenNew = GetHPRegenBonus(bf.source, bf.target, GetUnitAbilityLevel(bf.source, ABIL_ID))
+            
+            set .sdMod.percent = GetBuffSpellDealtBonus(bf.source, GetUnitAbilityLevel(bf.source, ABIL_ID))
+            
+            call Status(this).modHPRegen(hpRegenNew - .hpRegen)
+            
+            set .hpRegen = hpRegenNew
+        endmethod
+        private static method onApply takes nothing returns nothing
+            local Buff bf = Advent.value
+            local thistype this = bf.targetId
+            
+            set .sdMod = Status(this).modSpellDealtEx(0.)
+            set .hpRegen = 0.
+            set .fx = Effect.createTarget(GetBuffFXPath(bf.source), bf.target, "chest")
+        endmethod
+        
+        private static method onInit takes nothing returns nothing
+            set buffType = BuffType.create()
+            set buffType.category = BUFF_CATEGORY_BUFF
+            set buffType.abilId = BUFF_ABIL_ID
+            set buffType.buffId = BUFF_BUFF_ID
+            
+            call buffType.registerApplyEvent(function thistype.onApply, PRIORITY_LAST)
+            call buffType.registerStackEvent(function thistype.onStack, PRIORITY_LAST)
+            call buffType.registerRemoveEvent(function thistype.onRemove, PRIORITY_LAST)
+        endmethod
+    endstruct
+    
+    private function RemoveDummyBuff takes nothing returns nothing
+        call UnitRemoveAbility(GetUnitById(ReleaseTimer(GetExpiredTimer())), 'BNvc')
+    endfunction
+    
+    private function OnCast takes nothing returns nothing
+        local unit caster = GetTriggerUnit()
+        
+        local real castX = GetUnitX(caster)
+        local real castY = GetUnitY(caster)
+        local unit u
+        
+        local integer abilLv = GetUnitAbilityLevel(caster, ABIL_ID)
+        local real radius = GetEffectRadius(caster, abilLv)
+        local real buffDuration = GetBuffDuration(caster, abilLv)
+        
+        //! runtextmacro GroupMacro("u", "castX", "castY", "radius"))
+            if IsAlly(u, caster) then
+                call Buff.apply(caster, u, SDBuff.buffType, buffDuration)
+            endif
+        //! runtextmacro GroupMacroEnd()
+        
+        call xefx.createFX("Effects\\DarkPortalTarget_Green.mdx", castX, castY, radius / 125.).destroy()
+        call TimerStart(NewTimerEx(GetUnitId(caster)), 0, false, function RemoveDummyBuff)
+        
+        set caster = null
+    endfunction
+    
+    private function OnInit takes nothing returns nothing
+        call RegisterSpellEffectEvent(ABIL_ID, function OnCast)
+        call PreloadAbility(ABIL_ID)
+    endfunction
+
+endscope

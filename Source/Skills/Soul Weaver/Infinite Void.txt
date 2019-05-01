@@ -1,0 +1,255 @@
+scope InfiniteVoid
+
+/* 설정 */
+
+    globals
+        /* 효과 반경 */
+        private constant real EFFECT_RADIUS = 575.
+        
+        /* 발동 딜레이 */
+        private constant real ACTIVATION_DELAY = 1.00
+    endglobals
+    
+    /* 폭발 데미지 */
+    private function GetDamage takes unit caster returns real
+        return 725. * GetHeroInt(caster, true)
+    endfunction
+    
+    /* 스턴 지속 시간 */
+    private function GetStunDuration takes unit caster returns real
+        return 2.00
+    endfunction
+    
+    /* 지속 시간 */
+    private function GetDuration takes unit caster returns real
+        return 4.00
+    endfunction
+    
+/* 설정 끝 */
+
+    private function GetFXShardTravelDuration takes unit caster, real progressRatio returns real
+        return 0.75 - 0.50 * progressRatio
+    endfunction
+    private function GetFXShardScale takes unit caster, real progressRatio returns real
+        return 1.00 + 0.75 * progressRatio
+    endfunction
+    
+    globals
+        private constant real SPINS_PER_SECOND = 1.00
+        private constant real MAX_DRAG_RADIUS = 96.
+        
+        private constant real FX_Z_START = 0.
+        private constant real FX_Z_END = 150.
+        private constant real FX_SCALE = 1.50
+        private constant real FX_CENTER_OFFSET_Z = 150. * FX_SCALE
+        
+        private constant real FX_SHARD_SPAWN_RADIUS_START = 250.
+        private constant real FX_SHARD_SPAWN_RADIUS_END = 500.
+        private constant real FX_SHARD_CURVE = 0.30
+        
+        private constant integer STAGE_PREPARATION = 1
+        private constant integer STAGE_ACTIVE = 2
+        
+        private constant integer SILENCE_ABIL_ID = 'A05J'
+        private constant integer MARK_ABIL_ID = 'A01C'
+        public constant integer ABIL_ID = 'A01B'
+    endglobals
+    
+    private struct Skill extends array
+        implement UnitIndexHelper
+        
+        private timer runner
+        private xefx fx
+        private xefx circleFX
+        
+        private integer stage
+        private integer tick
+        
+        private real targetX
+        private real targetY
+        private real damage
+        private real duration
+        
+        private static method periodic takes nothing returns nothing
+            local thistype this = GetTimerData(GetExpiredTimer())
+            local real progressRatio
+            
+            local real curX
+            local real curY
+            local real curZ
+            local real newX
+            local real newY
+            
+            local real angle
+            local real angleZ
+            local real dist
+            local real distMove
+            
+            local unit u
+            local Missile fxMissile
+            local real shardTravelDuration
+            
+            set .tick = .tick - 1
+            set curX = .fx.x
+            set curY = .fx.y
+            set curZ = .fx.z
+            
+            if .stage == 0 then
+                set .stage = STAGE_PREPARATION
+                set .tick = R2I(ACTIVATION_DELAY / CTL_PERIOD)
+                
+                call TimerStart(.runner, CTL_PERIOD, true, function thistype.periodic)
+            elseif .stage == STAGE_PREPARATION then
+                set progressRatio = 1. - .tick / (ACTIVATION_DELAY / CTL_PERIOD)
+                set .fx.z = FX_Z_START + (FX_Z_END - FX_Z_START) * progressRatio
+                
+                call .fx.recolor(255, 255, 255, R2I(255 - 255 * progressRatio))
+                call .circleFX.recolor(0, 55, 0, R2I(255 * progressRatio))
+                
+                if .tick <= 0 then
+                    set .stage = STAGE_ACTIVE
+                    set .tick = R2I(.duration / CTL_PERIOD)
+                    
+                    call TimerStart(.runner, CTL_PERIOD, true, function thistype.periodic)
+                endif
+            elseif .stage == STAGE_ACTIVE then
+                set progressRatio = 1. - .tick / (.duration / CTL_PERIOD)
+                set angle = Atan2(.targetY - curY, .targetX - curX)
+                set dist = GetDistanceEx(.targetX - curX, .targetY - curY)
+                set distMove = Min(0.04 * dist + 5., dist)
+                
+                set curX = curX + distMove * Cos(angle)
+                set curY = curY + distMove * Sin(angle)
+                set .fx.x = curX
+                set .fx.y = curY
+                
+                set shardTravelDuration = GetFXShardTravelDuration(.unit, progressRatio)
+                call .circleFX.recolor(0, 55, 0, R2I(255. - 127. * progressRatio))
+                
+                if .tick >= R2I((shardTravelDuration + 0.25) / CTL_PERIOD) then /* stop spawning near the end */
+                    set angle = GetRandomReal(0, RAD)
+                    set angleZ = GetRandomReal(-0.3 * bj_PI, 0.3 * bj_PI)
+                    /* FX_SHARD_SPAWN_RADIUS_START ~ FX_SHARD_SPAWN_RADIUS_END 사이의 랜덤한 값을 받아옴 (균등 분포) */
+                    set dist = SquareRoot(GetRandomReal(FX_SHARD_SPAWN_RADIUS_START * FX_SHARD_SPAWN_RADIUS_START, /*
+                                        */ FX_SHARD_SPAWN_RADIUS_END * FX_SHARD_SPAWN_RADIUS_END))
+                    
+                    set fxMissile = Missile.create(curX + dist * Cos(angle) * Cos(angleZ), curY + dist * Sin(angle) * Cos(angleZ), /*
+                                                */ curZ + FX_CENTER_OFFSET_Z + dist * Sin(angleZ), .fx.dummy)
+                    set fxMissile.targetHeight = FX_CENTER_OFFSET_Z
+                    set fxMissile.arc = GetRandomReal(0, 0.15)
+                    set fxMissile.curve = FX_SHARD_CURVE
+                    set fxMissile.speed = fxMissile.origin.distance / shardTravelDuration
+                    set fxMissile.fx.fxpath = "Abilities\\Weapons\\AvengerMissile\\AvengerMissile.mdl"
+                    set fxMissile.fx.scale = GetFXShardScale(.unit, progressRatio)
+                    
+                    call FXMissile.launch(fxMissile)
+                endif
+                
+                //! runtextmacro GroupMacro("u", "curX", "curY", "EFFECT_RADIUS")
+                    if IsHittable(u, .unit) then
+                        call Status[u].applyBind(SILENCE_ABIL_ID, OrderId("soulburn"))
+                        
+                        /* 이동 가능한 유닛만 끌당 */
+                        if GetUnitMoveSpeed(u) > 0 and not Status[u].resolute then
+                            set newX = GetUnitX(u) - curX
+                            set newY = GetUnitY(u) - curY
+                            set angle = Atan2(newY, newX) + CTL_PERIOD * SPINS_PER_SECOND * RAD
+                            set dist = Max(0.975 * GetDistanceEx(newX, newY) - 2.5, MAX_DRAG_RADIUS)
+                            
+                            set newX = curX + dist * Cos(angle)
+                            set newY = curY + dist * Sin(angle)
+                            
+                            if IsWalkable(newX, newY) then
+                                call SetUnitX(u, newX)
+                                call SetUnitY(u, newY)
+                                
+                                if ModuloInteger(.tick, 2) == 0 and GetUnitFlyHeight(u) <= 10 then
+                                    call DestroyEffect(AddSpecialEffect("Abilities\\Weapons\\AncientProtectorMissile\\AncientProtectorMissile.mdl", newX, newY))
+                                endif
+                            endif
+                        endif
+                    endif
+                //! runtextmacro GroupMacroEnd()
+                
+                if .tick <= 0 then
+                    set .stage = -1
+                    
+                    //! runtextmacro GroupMacro("u", "curX", "curY", "EFFECT_RADIUS")
+                        if IsHittable(u, .unit) then
+                            call Damage.spellText(.unit, u, .damage, false, 20, "|cff307f3f")
+                            call Stun(u, GetStunDuration(.unit))
+                            
+                            call DestroyEffect(AddSpecialEffectTargetLocal(GetOwningPlayer(.unit), /*
+                            */ "Effects\\DemonBolt_Green.mdl", u, "origin"))
+                            call DestroyEffect(AddSpecialEffectTarget("Effects\\DarkImpale_Green.mdx", u, "origin"))
+                        endif
+                    //! runtextmacro GroupMacroEnd()
+                    
+                    call xefx.createFX("Objects\\Spawnmodels\\Undead\\UDeathMedium\\UDeath.mdl", curX, curY, EFFECT_RADIUS / 175.).recolor(105, 255, 105, 105).destroy()
+                    call xefx.createFX("Effects\\DesecrateGreen.mdl", curX, curY, EFFECT_RADIUS / 225.).destroy()
+                    call Camera[GetOwningPlayer(.unit)].shake(100, 0.75)
+                endif
+            endif
+                
+            if .stage == -1 then
+                call SetPlayerAbilityAvailable(GetOwningPlayer(.unit), ABIL_ID, true)
+                call RemoveAbility(.unit, MARK_ABIL_ID)
+                
+                call ReleaseTimer(.runner)
+                call .fx.destroy()
+                call .circleFX.fade(0.50)
+                call UnitIndex(this).unlock()
+                
+                set .runner = null
+            endif
+        endmethod
+        
+        private static method onMark takes nothing returns nothing
+            local thistype this = GetUnitId(GetTriggerUnit())
+            
+            set .targetX = GetSpellTargetX()
+            set .targetY = GetSpellTargetY()
+        endmethod
+        
+        private static method onEffect takes nothing returns nothing
+            local thistype this = GetUnitId(GetTriggerUnit())
+            
+            set .targetX = GetSpellTargetX()
+            set .targetY = GetSpellTargetY()
+            
+            if .runner == null then
+                set .runner = NewTimerEx(this)
+                set .fx = xefx.create(.targetX, .targetY, 0.)
+                set .circleFX = xefx.createFX("Effects\\GrandVampiricAura.mdl", .targetX, .targetY, EFFECT_RADIUS / 400.)
+                set .stage = 0
+                set .tick = 0
+                set .damage = GetDamage(.unit)
+                set .duration = GetDuration(.unit)
+                
+                set .fx.fxpath = "Effects\\VoidGreen.mdl"
+                set .fx.scale = FX_SCALE
+                set .fx.z = FX_Z_START
+                
+                call UnitIndex(this).lock()
+                call .fx.recolor(255, 255, 255, 0)
+                call .circleFX.recolor(0, 55, 0, 0)
+                
+                call SetPlayerAbilityAvailable(GetOwningPlayer(.unit), ABIL_ID, false)
+                call AddAbility(.unit, MARK_ABIL_ID)
+                
+                call TimerStart(.runner, 0, false, function thistype.periodic)
+            endif
+            
+            call xefx.createFX("Effects\\DarkPortalTarget_Green.mdl", .targetX, .targetY, EFFECT_RADIUS / 125.).destroy()
+            call Camera[GetOwningPlayer(.unit)].shake(40, 0.25)
+        endmethod
+        
+        private static method onInit takes nothing returns nothing
+            call RegisterSpellEffectEvent(ABIL_ID, function thistype.onEffect)
+            call RegisterSpellEffectEvent(MARK_ABIL_ID, function thistype.onMark)
+            call PreloadAbility(ABIL_ID)
+            call PreloadAbility(MARK_ABIL_ID)
+        endmethod
+    endstruct
+    
+endscope

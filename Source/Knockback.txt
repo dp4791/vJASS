@@ -1,0 +1,134 @@
+library Knockback uses CTL, Pathability, Status, StunFunctions, UnitIndexer
+/*
+
+    사용법
+
+        call Knockback.apply(유닛, 거리, 최종 속도, 라디안 각도, 넉백 지속 시간, 넉백 순위)
+        - 대상이 넉백 면역이 아닐 경우에만 적용. 벽에 충돌시 무조건 기절합니다.
+        
+        call Knockback.applyEx(유닛, 거리, 최종 속도, 라디안 각도, 넉백 지속 시간, 넉백 순위, 기절 여부)
+    
+    기타
+    
+        넉백 순위는 현재 활성화된 넉백의 순위보다 같거나 높을시에만 적용됩니다.
+        -1일 경우 현재 활성화된 넉백의 순위와 상관없이 무조건 적용.
+    
+*/
+
+    struct Knockback extends array
+        implement UnitIndexStructMethods
+        
+        private Effect fx
+        private real lastX
+        private real lastY
+        
+        readonly boolean doStun
+        readonly integer level
+        readonly real speed
+        readonly real acceleration
+        readonly real remainingDuration
+        readonly real angle
+        
+        static boolean noDust = false
+        
+        implement CTT
+        
+            local real distanceMove
+            local real moveX
+            local real moveY
+            
+        implement CTTExpire
+        
+            set .remainingDuration = .remainingDuration - CTL_PERIOD
+            set distanceMove = CTL_PERIOD * (.speed + CTL_PERIOD * .acceleration / 2.)
+            set .speed = .speed + CTL_PERIOD * .acceleration
+            set moveX = GetUnitX(.unit) + distanceMove * Cos(.angle)
+            set moveY = GetUnitY(.unit) + distanceMove * Sin(.angle)
+            
+            if IsWalkableEx(moveX, moveY) then
+                set .lastX = moveX
+                set .lastY = moveY
+            else
+                set moveX = .lastX
+                set moveY = .lastY
+                
+                if doStun then
+                    call Stun(.unit, .remainingDuration)
+                    
+                    call DestroyEffect(AddSpecialEffectTarget("abilities\\weapons\\catapult\\catapultmissile.mdl", .unit, "chest"))
+                endif
+                
+                set .remainingDuration = 0.
+            endif
+            
+            call SetUnitX(.unit, moveX)
+            call SetUnitY(.unit, moveY)
+            
+            if .remainingDuration <= 0. then
+                if .fx != 0 then
+                    call .fx.destroy()
+                    
+                    set .fx = 0
+                endif
+                
+                call SetUnitPathing(.unit, true)
+                call .destroy()
+            endif
+            
+        implement CTTEndA
+        
+        static method applyEx takes unit u, real dist, real finalSpeed, real angle, real time, integer level, boolean doStun returns nothing
+            local thistype this
+            
+            if GetUnitMoveSpeed(u) > 0 then
+                set this = GetUnitId(u)
+                
+                if allocate(this) then
+                    if noDust then
+                        set noDust = false
+                    else
+                        set .fx = Effect.createTarget("Effects\\KnockbackDust.mdx", u, "origin")
+                    endif
+                    
+                    set .level = 0
+                    
+                    call SetUnitPathing(u, false)
+                endif
+                
+                if level == -1 or level >= .level then
+                    if time < CTL_PERIOD then
+                        set time = CTL_PERIOD
+                    endif
+                    
+                    set .doStun = doStun
+                    set .level = level
+                    set .acceleration = 2 * (finalSpeed * time - dist) / (time * time)
+                    set .speed = finalSpeed - .acceleration * time
+                    set .remainingDuration = time
+                    set .angle = angle
+                    set .lastX = GetUnitX(u)
+                    set .lastY = GetUnitY(u)
+                endif
+            endif
+        endmethod
+        
+        static method apply takes unit u, real dist, real finalSpeed, real angle, real time, integer level returns nothing
+            if not Status[u].resolute and GetUnitMoveSpeed(u) > 0 then
+                call applyEx(u, dist, finalSpeed, angle, time, level, true)
+            endif
+        endmethod
+        
+        static method toPoint takes unit u, real x, real y, real finalSpeed, real time, integer level returns nothing
+            local real difX
+            local real difY
+            
+            if not Status[u].resolute and GetUnitMoveSpeed(u) > 0 then
+                set difX = x - GetUnitX(u)
+                set difY = y - GetUnitY(u)
+                
+                call applyEx(u, SquareRoot(difX * difX + difY * difY), finalSpeed, Atan2(difY, difX), time, level, true)
+            endif
+        endmethod
+    endstruct
+    
+endlibrary

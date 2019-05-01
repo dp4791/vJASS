@@ -1,0 +1,251 @@
+scope AstralWalk
+    
+/* 설정 */
+
+    private function GetDamage takes unit caster, integer abilLv returns real
+        return (50.00 + 10.00 * abilLv) * GetHeroInt(caster, true)
+    endfunction
+    
+    private function GetCollisionRadius takes unit caster, integer abilLv returns real
+        return 325.
+    endfunction
+    
+    /* 디버프 받는 마법 데미지 증가량 (%) */
+    private function GetDebuffMagicDamageTakenBonus takes unit caster, integer abilLv returns real
+        return 8.
+    endfunction
+    
+    /* 디버프 지속 시간 */
+    private function GetDebuffDuration takes unit caster, integer abilLv returns real
+        return 15.
+    endfunction
+    
+    /* 버프 마법 방어력 증가량 (%) */
+    private function GetBuffMagicDefenseBonus takes unit caster, integer abilLv returns real
+        return 15.
+    endfunction
+    
+    /* 버프 지속 시간 */
+    private function GetBuffDuration takes unit caster, integer abilLv returns real
+        return 30.
+    endfunction
+    
+/* 설정 끝 */
+
+    globals
+        private constant integer BUFF_ABIL_ID = 'A01D'
+        private constant integer BUFF_BUFF_ID = 'B00C'
+        
+        private constant integer DEBUFF_ABIL_ID = 'A015'
+        private constant integer DEBUFF_BUFF_ID = 'B008'
+        
+        public constant integer ABIL_ID = 'A00Z'
+    endglobals
+    
+    private struct MDBuff extends array
+        
+        private Stat mdMod
+        private UnitColorMod colorMod
+        
+        readonly static BuffType buffType = 0
+        
+        private static method onRemove takes nothing returns nothing
+            local Buff bf = Advent.value
+            local thistype this = bf.targetId
+            
+            call .mdMod.destroy()
+            call .colorMod.destroy()
+        endmethod
+        private static method onStack takes nothing returns nothing
+            local Buff bf = Advent.value
+            local thistype this = bf.targetId
+            
+            set .mdMod.percent = GetBuffMagicDefenseBonus(bf.source, GetUnitAbilityLevel(bf.source, ABIL_ID))
+        endmethod
+        private static method onApply takes nothing returns nothing
+            local Buff bf = Advent.value
+            local thistype this = bf.targetId
+            
+            set .mdMod = Status(this).modMagicDefenseEx(0.)
+            set .colorMod = UnitColorMod.create(bf.target, 255, 255, 255, 205, -1)
+        endmethod
+        
+        private static method onInit takes nothing returns nothing
+            set buffType = BuffType.create()
+            set buffType.category = BUFF_CATEGORY_BUFF
+            set buffType.abilId = BUFF_ABIL_ID
+            set buffType.buffId = BUFF_BUFF_ID
+            
+            call buffType.registerApplyEvent(function thistype.onApply, PRIORITY_LAST)
+            call buffType.registerStackEvent(function thistype.onStack, PRIORITY_LAST)
+            call buffType.registerRemoveEvent(function thistype.onRemove, PRIORITY_LAST)
+        endmethod
+    endstruct
+    
+    private struct Debuff extends array
+        
+        private Stat mdtMod
+        
+        readonly static BuffType buffType = 0
+        
+        private static method onRemove takes nothing returns nothing
+            local Buff bf = Advent.value
+            local thistype this = bf.targetId
+            
+            call .mdtMod.destroy()
+        endmethod
+        private static method onStack takes nothing returns nothing
+            local Buff bf = Advent.value
+            local thistype this = bf.targetId
+            
+            set .mdtMod.percent = GetDebuffMagicDamageTakenBonus(bf.source, GetUnitAbilityLevel(bf.source, ABIL_ID))
+        endmethod
+        private static method onApply takes nothing returns nothing
+            local Buff bf = Advent.value
+            local thistype this = bf.targetId
+            
+            set .mdtMod = Status(this).modMagicDamageTakenEx(0.)
+        endmethod
+        
+        private static method onInit takes nothing returns nothing
+            set buffType = BuffType.create()
+            set buffType.category = BUFF_CATEGORY_DEBUFF
+            set buffType.abilId = DEBUFF_ABIL_ID
+            set buffType.buffId = DEBUFF_BUFF_ID
+            
+            call buffType.registerApplyEvent(function thistype.onApply, PRIORITY_LAST)
+            call buffType.registerStackEvent(function thistype.onStack, PRIORITY_LAST)
+            call buffType.registerRemoveEvent(function thistype.onRemove, PRIORITY_LAST)
+        endmethod
+    endstruct
+    
+    private struct Skill extends array
+        
+        private UnitIndex casterId
+        private UnitColorMod colorMod
+        private xefx fx
+        private real targetX
+        private real targetY
+        private real speed
+        
+        private group unitsHit
+        private integer abilLv
+        private real damage
+        
+        implement CTL
+        
+            local real curX
+            local real curY
+            
+            local real angle
+            local real distMove
+            local real distRemain
+            
+            local unit u
+            local real collision
+            local real buffDuration
+            local real debuffDuration
+            
+        implement CTLExpire
+            
+            set .speed = 1.10 * .speed + 5.
+            set curX = GetUnitX(.casterId.unit)
+            set curY = GetUnitY(.casterId.unit)
+            set angle = Atan2(.targetY - curY, .targetX - curX)
+            set distRemain = GetDistanceEx(.targetX - curX, .targetY - curY)
+            
+            set distMove = Min(.speed, distRemain)
+            set distRemain = distRemain - distMove
+            set curX = curX + distMove * Cos(angle)
+            set curY = curY + distMove * Sin(angle)
+            
+            if not IsWalkable(curX, curY) then
+                set distRemain = 0.
+                set curX = Pathability_X
+                set curY = Pathability_Y
+            endif
+            
+            set .fx.x = curX
+            set .fx.y = curY
+            set .fx.z = GetUnitFlyHeight(.casterId.unit) + 60
+            
+            set collision = GetCollisionRadius(.casterId.unit, .abilLv)
+            set buffDuration = GetBuffDuration(.casterId.unit, .abilLv)
+            set debuffDuration = GetDebuffDuration(.casterId.unit, .abilLv)
+            
+            //! runtextmacro GroupMacro("u", "curX", "curY", "collision")
+                if not IsUnitInGroup(u, .unitsHit) then
+                    if IsHittable(u, .casterId.unit) then
+                        call GroupAddUnit(.unitsHit, u)
+                        call Damage.spellText(.casterId.unit, u, .damage, false, 12, "|c00addf9e")
+                        call Buff.apply(.casterId.unit, u, Debuff.buffType, debuffDuration)
+                        
+                        call DestroyEffect(AddSpecialEffectTargetLocal(GetOwningPlayer(.casterId.unit), /*
+                        */ "Effects\\DemonBolt_Green.mdl", u, "origin"))
+                    elseif u != .casterId.unit and IsAlly(u, .casterId.unit) then
+                        call GroupAddUnit(.unitsHit, u)
+                        call Buff.apply(.casterId.unit, u, MDBuff.buffType, buffDuration)
+                    endif
+                endif
+            //! runtextmacro GroupMacroEnd()
+            
+            call SetUnitX(.casterId.unit, curX)
+            call SetUnitY(.casterId.unit, curY)
+            
+            if distRemain > 0. then
+                call Afterimage.createUnit(.casterId.unit, curX, curY, angle, /*
+                                        */ UnitInfo[Status(.casterId).baseId].standAnimID, UnitInfo[Status(.casterId).baseId].standAnimDuration, /*
+                                        */ UnitInfo[Status(.casterId).baseId].runAnimID, 0, 1, /*
+                                        */ 155, 0, 0.5)
+                
+                call SetUnitAnimationByIndex(.casterId.unit, UnitInfo[Status(.casterId).baseId].runAnimID)
+            else
+                call SetUnitPathing(.casterId.unit, true)
+                
+                call DestroyEffect(AddSpecialEffect("Abilities\\Spells\\NightElf\\Blink\\BlinkTarget.mdl", curX, curY))
+                
+                call .casterId.unlock()
+                call Group.release(.unitsHit)
+                call .colorMod.destroy()
+                call .fx.destroy()
+                call .destroy()
+                
+                set .unitsHit = null
+            endif
+            
+        implement CTLEnd
+        
+        private static method onCast takes nothing returns nothing
+            local thistype this = create()
+            local unit caster = GetTriggerUnit()
+            
+            local real x = GetUnitX(caster)
+            local real y = GetUnitY(caster)
+            local real z = GetUnitFlyHeight(caster) + 60
+            
+            set .casterId = GetUnitId(GetTriggerUnit())
+            set .targetX = GetSpellTargetX()
+            set .targetY = GetSpellTargetY()
+            set .colorMod = UnitColorMod.create(.casterId.unit, 255, 255, 255, 105, -1)
+            set .fx = xefx.createSimple("Effects\\Void2_Green.mdl", x, y, z, 1.50, Atan2(.targetY - y, .targetX - x), 0)
+            set .speed = 50
+            
+            set .unitsHit = Group.get()
+            set .abilLv = GetUnitAbilityLevel(.casterId.unit, ABIL_ID)
+            set .damage = GetDamage(.casterId.unit, .abilLv)
+            
+            call .casterId.lock()
+            call SetUnitPathing(.casterId.unit, false)
+            
+            call DestroyEffect(AddSpecialEffectTarget("Abilities\\Spells\\Human\\Invisibility\\InvisibilityTarget.mdl", .casterId.unit, "chest"))
+            
+            set caster = null
+        endmethod
+        
+        private static method onInit takes nothing returns nothing
+            call RegisterSpellEffectEvent(ABIL_ID, function thistype.onCast)
+            call PreloadAbility(ABIL_ID)
+        endmethod
+    endstruct
+    
+endscope

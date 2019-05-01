@@ -1,0 +1,137 @@
+library Link uses Alloc, TimerUtils, SystemFunctions
+
+    globals
+        private constant real DEFAULT_OFFSET = 60
+    endglobals
+    
+    struct Link extends array
+        implement Alloc
+        
+        readonly unit source
+        readonly real sourceX
+        readonly real sourceY
+        readonly real sourceZ
+        real sourceOffset
+        
+        readonly unit target
+        readonly real targetX
+        readonly real targetY
+        readonly real targetZ
+        real targetOffset
+        
+        private lightning l
+        private integer startTick
+        private integer tick
+        private real startAlpha
+        private real endAlpha
+        
+        method destroy takes nothing returns nothing
+            if .l != null then
+                call DestroyLightning(.l)
+                call .deallocate()
+                
+                set .l = null
+                set .source = null
+                set .target = null
+            endif
+        endmethod
+        
+        private method updatePos takes real sourceX, real sourceY, real targetX, real targetY returns nothing
+            if .source != null and GetUnitTypeId(.source) != 0 then
+                set .sourceX = GetUnitX(.source)
+                set .sourceY = GetUnitY(.source)
+                set .sourceZ = GetHeight(.sourceX, .sourceY) + GetUnitFlyHeight(.source)
+            elseif sourceX != .sourceX or sourceY != .sourceY then
+                set .sourceX = sourceX
+                set .sourceY = sourceY
+                set .sourceZ = GetHeight(.sourceX, .sourceY)
+            endif
+            
+            if .target != null and GetUnitTypeId(.target) != 0 then
+                set .targetX = GetUnitX(.target)
+                set .targetY = GetUnitY(.target)
+                set .targetZ = GetHeight(.targetX, .targetY) + GetUnitFlyHeight(.target)
+            elseif targetX != .targetX or targetY != .targetY then
+                set .targetX = targetX
+                set .targetY = targetY
+                set .targetZ = GetHeight(.targetX, .targetY)
+            endif
+        endmethod
+        
+        method update takes nothing returns nothing
+            call .updatePos(.sourceX, .sourceY, .targetX, .targetY)
+            call MoveLightningEx(.l, true, .sourceX, .sourceY, .sourceOffset + .sourceZ, .targetX, .targetY, .targetOffset + .targetZ)
+        endmethod
+        method updateEx takes real sourceX, real sourceY, real targetX, real targetY returns nothing
+            call .updatePos(sourceX, sourceY, targetX, targetY)
+            call MoveLightningEx(.l, true, .sourceX, .sourceY, .sourceOffset + .sourceZ, .targetX, .targetY, .targetOffset + .targetZ)
+        endmethod
+        
+        private static method periodic takes nothing returns nothing
+            local thistype this = GetTimerData(GetExpiredTimer())
+            
+            set .tick = .tick - 1
+                    
+            call .update()
+            call SetLightningColor(.l, 1, 1, 1, .startAlpha + (.endAlpha - .startAlpha) * (1. - .tick / I2R(.startTick)))
+            
+            if .tick <= 0 then
+                call ReleaseTimer(GetExpiredTimer())
+                call .destroy()
+            endif
+        endmethod
+        
+        method timedDestroy takes real startAlpha, real endAlpha, real duration returns nothing
+            if .tick == 0 then
+                set .startTick = MaxI(1, R2I(duration / CTL_PERIOD))
+                set .tick = .startTick
+                set .startAlpha = startAlpha
+                set .endAlpha = endAlpha
+                
+                call TimerStart(NewTimerEx(this), CTL_PERIOD, true, function thistype.periodic)
+            endif
+        endmethod
+        
+        static method createEx takes string linkType, real x, real y, real z, real tX, real tY, real tZ returns thistype
+            local thistype this = allocate()
+            
+            set .sourceOffset = z
+            set .targetOffset = tZ
+            
+            call .updatePos(x, y, tX, tY)
+            
+            set .l = AddLightningEx(linkType, true, .sourceX, .sourceY, .sourceOffset + .sourceZ, .targetX, .targetY, .targetOffset + .targetZ)
+            return this
+        endmethod
+        
+        static method createTarget takes string linkType, real x, real y, real z, unit t returns thistype
+            local thistype this = allocate()
+            
+            set .sourceOffset = z
+            
+            set .target = t
+            set .targetOffset = DEFAULT_OFFSET
+            
+            call .updatePos(x, y, 0, 0)
+            
+            set .l = AddLightningEx(linkType, true, .sourceX, .sourceY, .sourceOffset + .sourceZ, .targetX, .targetY, .targetOffset + .targetZ)
+            return this
+        endmethod
+        
+        static method create takes string linkType, unit s, unit t returns thistype
+            local thistype this = allocate()
+            
+            set .source = s
+            set .sourceOffset = DEFAULT_OFFSET
+            
+            set .target = t
+            set .targetOffset = DEFAULT_OFFSET
+            
+            call .updatePos(0, 0, 0, 0)
+            
+            set .l = AddLightningEx(linkType, true, .sourceX, .sourceY, .sourceOffset + .sourceZ, .targetX, .targetY, .targetOffset + .targetZ)
+            return this
+        endmethod
+    endstruct
+
+endlibrary

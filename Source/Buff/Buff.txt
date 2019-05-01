@@ -1,0 +1,445 @@
+library Buff uses Advent, DeathEvent, Effect, TimerUtils, SystemFunctions
+/*
+
+    API
+    
+        BuffType
+            상태 효과의 기본 정보를 담는 구조체.
+            
+            생성자/파괴자
+                create() -> BuffType
+                
+            멤버 변수 (변경 가능)
+                int abilId = 버프 어빌리티 ID
+                int buffId = 버프 버프 ID
+                * 설정되어 있을시 버프 적용/제거마다 자동으로 오브젝트 버프가 적용/해제됨
+                
+                string fxPath = 효과 경로
+                string fxAttachPoint = 효과 부착 포인트
+                * 설정되어 있을시 버프 적용/제거마다 자동으로 효과가 적용/해제됨
+                
+                real period = 주기
+                * registerPeriodEvent()와 사용
+                
+            멤버 함수
+                registerApplyEvent(code c)
+                * 상태 이상이 적용될 시 실행되는 코드 등록
+                * 처음 적용시에만 실행됨
+                
+                registerStackEvent(code c)
+                * 상태 이상이 적용 및 중첩될 시 실행되는 코드 등록
+                
+                regiserPeriodEvent(code c)
+                * period 주기마다 실행되는 코드 등록
+                * 다른 주기가 필요한 경우 코드 내부에서 직접 해당 논리를 적용하세요
+                
+                registerExpireEvent(code c)
+                * 상태 이상이 만료될 시 실행되는 코드 등록
+                * 시간 경과가 아닌 강제 제거일시 발동되지 않음
+                
+                registerRemoveEvent(code c)
+                * 상태 이상이 제거될 시 실행되는 코드 등록
+                
+        Buff
+            상태 효과의 각 개체.
+            
+            생성자/파괴자
+                create(BuffType type, unit source, unit target, real duration) -> Buff
+                * 생성 실패시 0 반환
+                    * target이 null인경우 생성 실패
+                
+                destroy()
+                
+            멤버 변수 (변경 가능)
+                real duration = 지속 시간
+                * 0으로 설정시 무한 지속
+                
+            
+*/
+
+    globals
+        BuffType BUFF_CATEGORY_BUFF = 0
+        BuffType BUFF_CATEGORY_DEBUFF = 0
+        BuffType BUFF_CATEGORY_DEBUFF_UNREMOVABLE = 0
+    endglobals
+    
+    private module M
+        private static method onInit takes nothing returns nothing
+            set BUFF_CATEGORY_BUFF = BuffType.create()
+            set BUFF_CATEGORY_DEBUFF = BuffType.create()
+            set BUFF_CATEGORY_DEBUFF_UNREMOVABLE = BuffType.create()
+        endmethod
+    endmodule
+    
+    struct BuffType extends array
+        implement SimpleAlloc
+        
+        thistype category
+        integer abilId
+        integer buffId
+        boolean fxLocal
+        string fxPath
+        string fxAttachPoint
+        real period
+        
+        readonly boolean allocated
+        
+        //! runtextmacro RegisterAdvent("Apply")
+        //! runtextmacro RegisterAdvent("Stack")
+        //! runtextmacro RegisterAdvent("Period")
+        //! runtextmacro RegisterAdvent("Expire")
+        //! runtextmacro RegisterAdvent("Remove")
+        
+        static method create takes nothing returns thistype
+            local thistype this = allocate()
+            
+            set .allocated = true
+            return this
+        endmethod
+        
+        implement M
+    endstruct
+    
+    struct Buff extends array
+        implement LinkedList
+        
+        readonly delegate BuffType buffType
+        
+        readonly UnitIndex sourceId
+        readonly UnitIndex targetId
+        readonly boolean destroyed
+        
+        private Effect fx
+        private integer lockCount
+        private timer runner
+        private timer periodicRunner
+        
+        readonly static thistype array headList
+        
+        method operator source takes nothing returns unit
+            return .sourceId.unit
+        endmethod
+        method operator target takes nothing returns unit
+            return .targetId.unit
+        endmethod
+        
+        method lock takes nothing returns nothing
+            if .linked then
+                set .lockCount = .lockCount + 1
+            endif
+        endmethod
+        
+        method unlock takes nothing returns nothing
+            if .linked then
+                set .lockCount = .lockCount - 1
+                
+                if .lockCount == 0 then
+                    call .destroyNode()
+                    
+                    if .headList[.targetId].next == .headList[.targetId] then
+                        call .headList[.targetId].destroyHead()
+                        
+                        set .headList[.targetId] = 0
+                    endif
+                    
+                    call .targetId.unlock()
+                endif
+            endif
+        endmethod
+        
+        method destroy takes nothing returns nothing
+            if .linked and not .destroyed then
+                set .destroyed = true
+                
+                if .category.onRemove != 0 then
+                    call .category.onRemove.fireValue(this)
+                endif
+                
+                if .onRemove != 0 then
+                    call .onRemove.fireValue(this)
+                endif
+                
+                if .abilId != 0 then
+                    call RemoveBuff(.target, .abilId, .buffId)
+                elseif .buffId != 0 then
+                    call RemoveAbility(.target, .buffId)
+                endif
+                
+                if .fx != 0 then
+                    call .fx.destroy()
+                endif
+                
+                if .runner != null then
+                    call ReleaseTimer(.runner)
+                    
+                    set .runner = null
+                endif
+                
+                if .periodicRunner != null then
+                    call ReleaseTimer(.periodicRunner)
+                    
+                    set .periodicRunner = null
+                endif
+                
+                if .sourceId != 0 then
+                    call .sourceId.unlock()
+                    
+                    set .sourceId = 0
+                endif
+                
+                call .unlock()
+            endif
+        endmethod
+        
+        private static method onExpiration takes nothing returns nothing
+            local thistype this = GetTimerData(GetExpiredTimer())
+            
+            if .onExpire != 0 then
+                call .onExpire.fireValue(this)
+            endif
+            
+            call .destroy()
+        endmethod
+        
+        method operator duration takes nothing returns real
+            if .runner == null then
+                return 0.
+            endif
+            
+            return TimerGetRemaining(.runner)
+        endmethod
+        method operator duration= takes real newDuration returns nothing
+            if newDuration > 0 then
+                if .runner == null then
+                    set .runner = NewTimerEx(this)
+                endif
+                
+                call TimerStart(.runner, newDuration, false, function thistype.onExpiration)
+            elseif .runner != null then
+                call ReleaseTimer(.runner)
+                
+                set .runner = null
+            endif
+        endmethod
+        
+        private static method periodic takes nothing returns nothing
+            local thistype this = GetTimerData(GetExpiredTimer())
+            
+            call .category.onPeriod.fireValue(this)
+            call .onPeriod.fireValue(this)
+        endmethod
+        
+        static method getOfType takes unit target, BuffType buffType returns thistype
+            local UnitIndex targetId = GetUnitId(target)
+            local thistype head = headList[targetId]
+            local thistype node
+            
+            if head == 0 then
+                return 0
+            endif
+            
+            set node = head.next
+            loop
+                exitwhen node == head or node.buffType == buffType
+                set node = node.next
+            endloop
+            
+            if node == head then
+                return 0
+            endif
+            
+            return node
+        endmethod
+        
+        static method hasOfType takes unit target, BuffType buffType returns boolean
+            return (getOfType(target, buffType) != 0)
+        endmethod
+        
+        static method apply takes unit source, unit target, BuffType buffType, real duration returns thistype
+            local UnitIndex sourceId
+            local UnitIndex targetId
+            
+            local thistype this
+            local thistype head
+            
+            local boolean new
+            
+            if buffType == 0 or not buffType.allocated then
+                call ThrowWarning(true, "Buff", "apply", "Buff", 0, "buffType is invalid")
+                return 0
+            endif
+            
+            if not UnitAlive(target) then
+                return 0
+            endif
+            
+            set sourceId = GetUnitId(source)
+            set targetId = GetUnitId(target)
+            
+            if targetId == 0 or not Status(targetId).allocated then
+                call ThrowWarning(true, "Buff", "apply", "Buff", 0, "target (" + GetUnitName(target) + ") is not valid unit")
+                return 0
+            endif
+            
+            if buffType == BUFF_CATEGORY_DEBUFF and Status(targetId).debuffFree then
+                return 0
+            endif
+            
+            // retrieve head node; create if there isn't one
+            set head = headList[targetId]
+            if head == 0 then
+                set head = createHead()
+                set headList[targetId] = head
+            endif
+            
+            // search for identical buff type within list
+            set this = getOfType(target, buffType)
+            
+            set new = false
+            if this == 0 then // no identical buff was found
+                // create new buff
+                set new = true
+                set this = createNode()
+                set .destroyed = false
+                set .sourceId = sourceId
+                set .targetId = targetId
+                set .buffType = buffType
+                set .lockCount = 0
+                
+                call head.link(this)
+                call .lock()
+                
+                if .sourceId != 0 then
+                    call .sourceId.lock()
+                endif
+                
+                call .targetId.lock()
+                
+                if .abilId != 0 then
+                    call AddBuff(.target, .abilId)
+                endif
+                
+                if fxPath != "" and .fxAttachPoint != "" then
+                    if .fxLocal then
+                        set .fx = Effect.createTarget(GetLocalString(.fxPath, GetOwningPlayer(.source)), .target, .fxAttachPoint)
+                    else
+                        set .fx = Effect.createTarget(.fxPath, .target, .fxAttachPoint)
+                    endif
+                endif
+                
+                if .onPeriod != 0 or .category.onPeriod != 0 then
+                    if .period > 0 then
+                        set .periodicRunner = NewTimerEx(this)
+                        
+                        call TimerStart(.periodicRunner, .period, true, function thistype.periodic)
+                    else
+                        call ThrowWarning(true, "Buff", "apply", "Buff", 0, "onPeriod was found but period is not set or valid")
+                    endif
+                endif
+            endif
+            
+            set .duration = duration
+            
+            if new then
+                if .category.onApply != 0 then
+                    call .category.onApply.fireValue(this)
+                endif
+                
+                if .onApply != 0 then
+                    call .onApply.fireValue(this)
+                endif
+            endif
+            
+            if .onStack != 0 then
+                call .onStack.fireValue(this)
+            endif
+            
+            return this
+        endmethod
+    endstruct
+    
+    struct BuffManager extends array
+        implement UnitIndexStructMethods
+        
+        method clearAll takes nothing returns nothing
+            local Buff buffHead = Buff.headList[this]
+            local Buff buffNode
+            
+            if buffHead != 0 then
+                set buffNode = buffHead.next
+                loop
+                    exitwhen buffHead == buffNode
+                    call buffNode.lock()
+                    set buffNode = buffNode.next
+                endloop
+                
+                set buffNode = buffHead.next
+                loop
+                    exitwhen buffHead == buffNode
+                    call buffNode.unlock()
+                    call buffNode.destroy()
+                    set buffNode = buffNode.next
+                endloop
+            endif
+        endmethod
+        
+        method clearCategory takes integer category returns nothing
+            local Buff buffHead = Buff.headList[this]
+            local Buff buffNode
+            
+            if buffHead != 0 then
+                set buffNode = buffHead.next
+                loop
+                    exitwhen buffHead == buffNode
+                    call buffNode.lock()
+                    set buffNode = buffNode.next
+                endloop
+                
+                set buffNode = buffHead.next
+                loop
+                    exitwhen buffHead == buffNode
+                    call buffNode.unlock()
+                    
+                    if buffNode.category == category then
+                        call buffNode.destroy()
+                    endif
+                    
+                    set buffNode = buffNode.next
+                endloop
+            endif
+        endmethod
+        method clearBuffs takes nothing returns nothing
+            call .clearCategory(BUFF_CATEGORY_BUFF)
+        endmethod
+        method clearDebuffs takes nothing returns nothing
+            call .clearCategory(BUFF_CATEGORY_DEBUFF)
+        endmethod
+        
+        private static method onExpiration takes nothing returns nothing
+            call thistype(ReleaseTimer(GetExpiredTimer())).clearAll()
+        endmethod
+        
+        private static method onDeath takes nothing returns boolean
+            local thistype this = DeathEvent.killedID
+            
+            if Buff.headList[this] != 0 then
+                call TimerStart(NewTimerEx(this), 0, false, function thistype.onExpiration)
+            endif
+            return false
+        endmethod
+        private static method onDeindex takes nothing returns boolean
+            local thistype this = GetIndexedUnitId()
+            
+            if Buff.headList[this] != 0 then
+                call TimerStart(NewTimerEx(this), 0, false, function thistype.onExpiration)
+            endif
+            return false
+        endmethod
+        
+        private static method onInit takes nothing returns nothing
+            call DeathEvent.registerRun(function thistype.onDeath, PRIORITY_LAST)
+            call RegisterUnitIndexEvent(Condition(function thistype.onDeindex), UnitIndexer.DEINDEX)
+        endmethod
+    endstruct
+    
+endlibrary

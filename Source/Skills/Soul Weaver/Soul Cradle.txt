@@ -1,0 +1,175 @@
+scope SoulCradle
+
+/* 설정 */
+
+    globals
+        private constant real ACTIVATION_DELAY = 0.50
+        
+        private constant real TICK_PERIOD = 0.25
+    endglobals
+    
+    private function GetDamagePerSecond takes unit caster, integer abilLv returns real
+        return (30.00 + 10.00 * abilLv) * GetHeroInt(caster, true)
+    endfunction
+    
+    private function GetStunDurationPerTick takes unit caster, integer abilLv returns real
+        return 0.50
+    endfunction
+    
+    private function GetEffectRadius takes unit caster, integer abilLv returns real
+        return 500.
+    endfunction
+    
+    private function GetDuration takes unit caster, integer abilLv returns real
+        return 6.
+    endfunction
+    
+/* 설정 끝 */
+    
+    globals
+        private constant integer STAGE_PREPARING = 1
+        private constant integer STAGE_ACTIVE = 2
+        
+        private constant integer BUFF_ABIL_ID = 'A018'
+        private constant integer BUFF_BUFF_ID = 'B00A'
+        
+        private constant integer FX_SPIKE_ID = 'e011'
+        public constant integer ABIL_ID = 'A016'
+    endglobals
+    
+    private struct UndyingBuff extends array
+        
+        private Advent damagedEv
+        
+        readonly static BuffType buffType = 0
+        
+        private static method onRemove takes nothing returns nothing
+            local Buff bf = Advent.value
+            local thistype this = bf.targetId
+            
+            call .damagedEv.destroy()
+        endmethod
+        private static method onDamaged takes nothing returns nothing
+            local thistype this = GetUnitId(Damage.target)
+            
+            if Damage.damage > 0 and Status(this).HP - Damage.damage <= 1. then
+                call Damage.blockAll()
+                
+                set Status(this).HP = 1.
+            endif
+        endmethod
+        private static method onApply takes nothing returns nothing
+            local Buff bf = Advent.value
+            local thistype this = bf.targetId
+            
+            set .damagedEv = Status(this).registerDamagedEx(function thistype.onDamaged, PRIORITY_DAMAGED_BERSERK)
+        endmethod
+        
+        private static method onInit takes nothing returns nothing
+            set buffType = BuffType.create()
+            set buffType.category = BUFF_CATEGORY_BUFF
+            set buffType.abilId = BUFF_ABIL_ID
+            set buffType.buffId = BUFF_BUFF_ID
+            
+            call buffType.registerApplyEvent(function thistype.onApply, PRIORITY_LAST)
+            call buffType.registerRemoveEvent(function thistype.onRemove, PRIORITY_LAST)
+        endmethod
+    endstruct
+    
+    private struct Skill extends array
+        implement Alloc
+        
+        private UnitIndex casterId
+        private xefx auraFX
+        private xefx spikeFX
+        private integer stage
+        private integer tick
+        
+        private integer abilLv
+        private real damage
+        private real radius
+        
+        private static method periodic takes nothing returns nothing
+            local thistype this = GetTimerData(GetExpiredTimer())
+            local real x = .auraFX.x
+            local real y = .auraFX.y
+            local unit u
+            
+            local boolean doTick
+            local real stunDuration
+            
+            set .tick = .tick - 1
+            
+            if .stage == 0 then
+                set .stage = STAGE_PREPARING
+                
+                call TimerStart(GetExpiredTimer(), ACTIVATION_DELAY, false, function thistype.periodic)
+            elseif .stage == STAGE_PREPARING then
+                set .stage = STAGE_ACTIVE
+                set .tick = R2I(GetDuration(.casterId.unit, .abilLv) / CTL_PERIOD)
+                
+                call TimerStart(GetExpiredTimer(), CTL_PERIOD, true, function thistype.periodic)
+            elseif .stage == STAGE_ACTIVE then
+                if ModuloInteger(.tick, R2I(TICK_PERIOD / CTL_PERIOD)) == 0 then
+                    set doTick = true
+                    set stunDuration = GetStunDurationPerTick(.casterId.unit, .abilLv)
+                endif
+                
+                //! runtextmacro GroupMacro("u", "x", "y", "radius")
+                    if doTick and IsHittable(u, .casterId.unit) then
+                        call Damage.spell(.casterId.unit, u, .damage)
+                        call Stun(u, stunDuration)
+                        
+                        call DestroyEffect(AddSpecialEffectTarget("Objects\\Spawnmodels\\Undead\\UndeadDissipate\\UndeadDissipate.mdl", u, "origin"))
+                    elseif IsAlly(u, .casterId.unit) then
+                        call Buff.apply(.casterId.unit, u, UndyingBuff.buffType, 2. * TICK_PERIOD)
+                    endif
+                //! runtextmacro GroupMacroEnd()
+                
+                if .tick <= 0 then
+                    set .stage = -1
+                endif
+            endif
+            
+            if .stage == -1 then
+                call ReleaseTimer(GetExpiredTimer())
+                call .casterId.unlock()
+                call .auraFX.destroy()
+                call .spikeFX.fade(1.00)
+                call .deallocate()
+            endif
+        endmethod
+        
+        private static method onEffect takes nothing returns nothing
+            local thistype this = allocate()
+            local unit caster = GetTriggerUnit()
+            
+            local real casterX = GetUnitX(caster)
+            local real casterY = GetUnitY(caster)
+            
+            set .casterId = GetUnitId(caster)
+            
+            set .abilLv = GetUnitAbilityLevel(.casterId.unit, ABIL_ID)
+            set .damage = TICK_PERIOD * GetDamagePerSecond(.casterId.unit, .abilLv)
+            set .radius = GetEffectRadius(.casterId.unit, .abilLv)
+            
+            set .auraFX = xefx.createFX("Effects\\CeremonyofDarkness_Green.mdx", casterX, casterY, .radius / 150.)
+            set .spikeFX = xefx.createEx(FX_SPIKE_ID, casterX, casterY, 0.)
+            set .spikeFX.tscale = 2.
+            set .stage = 0
+            set .tick = 0
+            
+            call .casterId.lock()
+            call .spikeFX.recolor(255, 255, 255, 127)
+            call TimerStart(NewTimerEx(this), 0, false, function thistype.periodic)
+            
+            set caster = null
+        endmethod
+        
+        private static method onInit takes nothing returns nothing
+            call RegisterSpellEffectEvent(ABIL_ID, function thistype.onEffect)
+            call PreloadAbility(ABIL_ID)
+        endmethod
+    endstruct
+    
+endscope

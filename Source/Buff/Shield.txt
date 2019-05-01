@@ -1,0 +1,100 @@
+library Shield uses Buff
+    
+    globals
+        BuffType BUFF_CATEGORY_SHIELD = 0
+    endglobals
+    
+    private module M
+        private static method onInit takes nothing returns nothing
+            set BUFF_CATEGORY_SHIELD = BuffType.create()
+            
+            call BUFF_CATEGORY_SHIELD.registerApplyEvent(function thistype.onApply, PRIORITY_LAST)
+            call BUFF_CATEGORY_SHIELD.registerRemoveEvent(function thistype.onRemove, PRIORITY_LAST)
+        endmethod
+    endmodule
+    struct Shield extends array
+        
+        readonly delegate Buff buff
+        
+        readonly real amount
+        private Advent onDamagedEvent
+        
+        private static method onRemove takes nothing returns boolean
+            local thistype this = Advent.value
+            
+            call .onDamagedEvent.destroy()
+            return false
+        endmethod
+        
+        private static method onDamaged takes nothing returns boolean
+            local thistype this = Advent.reg.data
+            
+            if .amount > 0. then
+                if Damage.damage < .amount then
+                    set .amount = .amount - Damage.damage
+                    
+                    call Damage.blockAll()
+                else
+                    call Damage.block(.amount)
+                    call .destroy()
+                endif
+            endif
+            
+            return false
+        endmethod
+        
+        private static method onApply takes nothing returns boolean
+            local thistype this = Advent.value
+            
+            set .buff = this
+            set .onDamagedEvent = Status(.targetId).registerDamagedEx(function thistype.onDamaged, PRIORITY_DAMAGED_ABSORB)
+            set .onDamagedEvent.data = this
+            set .amount = 0.
+            return false
+        endmethod
+        
+        static method apply takes unit source, unit target, BuffType buffType, real amount, real duration returns thistype
+            local thistype this
+            
+            if buffType.category != BUFF_CATEGORY_SHIELD then
+                call ThrowWarning(true, "Shield", "apply", "Shield", 0, "the category of buffType is not set to BUFF_CATEGORY_SHIELD")
+                return 0
+            endif
+            
+            set this = Buff.apply(source, target, buffType, duration)
+            set .amount = amount
+            return this
+        endmethod
+        
+        implement M
+    endstruct
+    
+    struct ShieldManager extends array
+        implement UnitIndexStructMethods
+        
+        method operator isEmpty takes nothing returns boolean
+            local Buff buffHead = Buff.headList[this]
+            local Buff buffNode
+            
+            if buffHead != 0 then
+                set buffNode = buffHead.next
+                loop
+                    exitwhen buffHead == buffNode
+                    
+                    if buffNode.category == BUFF_CATEGORY_SHIELD then
+                        return false
+                    endif
+                    
+                    set buffNode = buffNode.next
+                endloop
+            endif
+            
+            return true
+        endmethod
+        
+        method clear takes nothing returns nothing
+            call BuffManager(this).clearCategory(BUFF_CATEGORY_SHIELD)
+        endmethod
+    endstruct
+    
+endlibrary
